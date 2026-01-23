@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import os
 
@@ -23,6 +23,8 @@ class AppConfig:
     telegram_enabled: bool
     db_path: str
     pages: int
+    send_backlog: bool
+    max_send: int
 
 
 def load_config() -> AppConfig:
@@ -35,6 +37,8 @@ def load_config() -> AppConfig:
     telegram_enabled = bool(telegram_bot_token and telegram_chat_id)
     db_path = os.getenv("DB_PATH", "data.db")
     pages = int(os.getenv("PAGES", "2"))
+    send_backlog = os.getenv("SEND_BACKLOG", "0") == "1"
+    max_send = int(os.getenv("MAX_SEND", "10"))
     return AppConfig(
         olx_search_url=olx_search_url,
         telegram_bot_token=telegram_bot_token,
@@ -42,6 +46,8 @@ def load_config() -> AppConfig:
         telegram_enabled=telegram_enabled,
         db_path=db_path,
         pages=pages,
+        send_backlog=send_backlog,
+        max_send=max_send,
     )
 
 
@@ -78,6 +84,7 @@ def main() -> None:
     logger.info("Found %s listing previews", len(previews))
 
     new_count = 0
+    new_listings = []
     with repository.session_scope() as session:
         for preview in previews:
             try:
@@ -89,21 +96,38 @@ def main() -> None:
                 continue
             if repository.add_listing(session, listing_data):
                 new_count += 1
+                new_listings.append(listing_data)
     logger.info("Saved %s new listings", new_count)
 
+    sent_count = 0
     if config.telegram_enabled and telegram_client:
-        sent_count = 0
+        backlog_mode = config.send_backlog
         with repository.session_scope() as session:
-            listings = repository.list_unposted(session)
-            for listing in listings:
-                listing_data = repository.model_to_data(listing)
+            if backlog_mode:
+                listings = repository.list_unposted(session)
+                send_queue = [
+                    repository.model_to_data(listing) for listing in listings
+                ]
+            else:
+                send_queue = list(new_listings)
+            if config.max_send <= 0:
+                send_queue = []
+            else:
+                send_queue = send_queue[: config.max_send]
+            total_to_send = len(send_queue)
+            for index, listing_data in enumerate(send_queue, start=1):
+                logger.info("Sending %s/%s: %s", index, total_to_send, listing_data.url)
                 try:
                     if telegram_client.send_listing(listing_data):
-                        repository.mark_posted(session, listing, datetime.utcnow())
+                        listing = repository.get_by_url(session, listing_data.url)
+                        if listing:
+                            repository.mark_posted(
+                                session, listing, datetime.now(timezone.utc)
+                            )
                         sent_count += 1
                 except Exception as exc:
-                    logger.warning("Failed to send listing %s: %s", listing.url, exc)
-        logger.info("Sent %s listings to Telegram", sent_count)
+                    logger.warning("Failed to send listing %s: %s", listing_data.url, exc)
+    logger.info("Done. Saved %s. Sent %s. Exiting.", new_count, sent_count)
 
 
 if __name__ == "__main__":
