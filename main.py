@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -25,6 +26,7 @@ class AppConfig:
     pages: int
     send_backlog: bool
     max_send: int
+    agent_keywords_filter: bool
 
 
 def load_config() -> AppConfig:
@@ -39,6 +41,7 @@ def load_config() -> AppConfig:
     pages = int(os.getenv("PAGES", "2"))
     send_backlog = os.getenv("SEND_BACKLOG", "0") == "1"
     max_send = int(os.getenv("MAX_SEND", "10"))
+    agent_keywords_filter = os.getenv("AGENT_KEYWORDS_FILTER", "1") != "0"
     return AppConfig(
         olx_search_url=olx_search_url,
         telegram_bot_token=telegram_bot_token,
@@ -48,6 +51,7 @@ def load_config() -> AppConfig:
         pages=pages,
         send_backlog=send_backlog,
         max_send=max_send,
+        agent_keywords_filter=agent_keywords_filter,
     )
 
 
@@ -55,6 +59,26 @@ def build_database_url(db_path: str) -> str:
     if "://" in db_path:
         return db_path
     return f"sqlite:///{db_path}"
+
+
+AGENT_KEYWORDS = (
+    "агентство",
+    "агенція",
+    "рієлтор",
+    "риелтор",
+    "посредник",
+    "посередник",
+    "комиссия",
+    "комісія",
+)
+AGENT_ABBREVIATION_PATTERN = re.compile(r"(?<!\w)ан(?!\w)", re.IGNORECASE)
+
+
+def has_agent_keywords(title: str, description: str) -> bool:
+    text = f"{title} {description}".lower()
+    if any(keyword in text for keyword in AGENT_KEYWORDS):
+        return True
+    return bool(AGENT_ABBREVIATION_PATTERN.search(text))
 
 
 def main() -> None:
@@ -65,6 +89,7 @@ def main() -> None:
     logger = logging.getLogger("main")
 
     config = load_config()
+    logger.info("Using OLX_SEARCH_URL: %s", config.olx_search_url)
     http_client = HttpClient()
     repository = Repository(build_database_url(config.db_path))
     repository.init_db()
@@ -93,6 +118,11 @@ def main() -> None:
                 logger.warning("Failed to fetch listing %s: %s", preview.url, exc)
                 continue
             if not listing_data:
+                continue
+            if config.agent_keywords_filter and has_agent_keywords(
+                listing_data.title, listing_data.description
+            ):
+                logger.info("Skip (keyword agent): %s", listing_data.url)
                 continue
             if repository.add_listing(session, listing_data):
                 new_count += 1
