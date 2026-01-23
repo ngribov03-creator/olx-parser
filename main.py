@@ -15,6 +15,7 @@ from db.repository import Repository
 from sources.olx import fetch_listing_data, fetch_listings
 from telegram.client import TelegramClient, TelegramConfig
 from utils.http import HttpClient
+from utils.urgent import is_urgent
 
 
 @dataclass(frozen=True)
@@ -194,11 +195,22 @@ def main() -> None:
                 ]
             else:
                 send_queue = list(new_listings)
+            prioritized_listings = [
+                (listing, is_urgent(listing.title, listing.description))
+                for listing in send_queue
+            ]
+            urgent_lookup = {listing.url: urgent for listing, urgent in prioritized_listings}
+            urgent_queue = [listing for listing, urgent in prioritized_listings if urgent]
+            regular_queue = [listing for listing, urgent in prioritized_listings if not urgent]
+            if urgent_queue:
+                logger.info("Prioritizing %s urgent listings", len(urgent_queue))
+            send_queue = urgent_queue + regular_queue
             if config.max_send <= 0:
                 send_queue = []
             else:
                 send_queue = send_queue[: config.max_send]
             total_to_send = len(send_queue)
+            urgent_sent = 0
             for index, listing_data in enumerate(send_queue, start=1):
                 logger.info("Sending %s/%s: %s", index, total_to_send, listing_data.url)
                 try:
@@ -209,8 +221,11 @@ def main() -> None:
                                 session, listing, datetime.now(timezone.utc)
                             )
                         sent_count += 1
+                        if urgent_lookup.get(listing_data.url):
+                            urgent_sent += 1
                 except Exception as exc:
                     logger.warning("Failed to send listing %s: %s", listing_data.url, exc)
+            logger.info("Sent %s urgent listings", urgent_sent)
     logger.info("Done. Saved %s. Sent %s. Exiting.", new_count, sent_count)
 
 

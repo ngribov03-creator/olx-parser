@@ -102,7 +102,41 @@ def parse_listing_previews(html: str, base_url: str) -> List[ListingPreview]:
     return previews
 
 
-def get_phone(_url: str) -> Optional[str]:
+def _normalize_phone(phone: str) -> str:
+    return " ".join(phone.split())
+
+
+def _find_phone_in_json(data: object) -> Optional[str]:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key.lower() in {"phone", "telephone", "tel"} and isinstance(value, str):
+                normalized = _normalize_phone(value)
+                if normalized:
+                    return normalized
+            if isinstance(value, (dict, list)):
+                nested = _find_phone_in_json(value)
+                if nested:
+                    return nested
+        return None
+    if isinstance(data, list):
+        for item in data:
+            nested = _find_phone_in_json(item)
+            if nested:
+                return nested
+    return None
+
+
+def extract_phone(soup: BeautifulSoup, json_ld: Optional[dict]) -> Optional[str]:
+    if json_ld:
+        phone_from_json = _find_phone_in_json(json_ld)
+        if phone_from_json:
+            return phone_from_json
+    tel_link = soup.select_one('a[href^="tel:"]')
+    if tel_link:
+        href = tel_link.get("href", "")
+        phone = href.replace("tel:", "", 1).strip()
+        if phone:
+            return _normalize_phone(phone)
     return None
 
 
@@ -232,7 +266,7 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
         title=title,
         price=str(price),
         description=description,
-        phone=get_phone(url),
+        phone=extract_phone(soup, json_ld),
         photos=photos[:10],
         location=location,
         is_owner=owner,
