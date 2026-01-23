@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import re
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -71,14 +72,59 @@ AGENT_KEYWORDS = (
     "комиссия",
     "комісія",
 )
+NEGATION_MARKERS = ("без", "не", "ніяких", "никаких", "no")
 AGENT_ABBREVIATION_PATTERN = re.compile(r"(?<!\w)ан(?!\w)", re.IGNORECASE)
 
 
-def has_agent_keywords(title: str, description: str) -> bool:
+@dataclass(frozen=True)
+class AgentKeywordMatch:
+    matched: str
+    context: str
+
+
+def _has_negation_before(words: list[tuple[str, int, int]], index: int) -> bool:
+    window_start = max(0, index - 3)
+    return any(
+        words[offset][0] in NEGATION_MARKERS for offset in range(window_start, index)
+    )
+
+
+def _build_context(words: list[tuple[str, int, int]], index: int) -> str:
+    window_start = max(0, index - 3)
+    return " ".join(word for word, _, _ in words[window_start : index + 1])
+
+
+def find_agent_keyword_match(
+    title: str, description: str
+) -> Optional[AgentKeywordMatch]:
     text = f"{title} {description}".lower()
-    if any(keyword in text for keyword in AGENT_KEYWORDS):
-        return True
-    return bool(AGENT_ABBREVIATION_PATTERN.search(text))
+    words = [
+        (match.group(0), match.start(), match.end())
+        for match in re.finditer(r"\w+", text)
+    ]
+    for index, (word, _, _) in enumerate(words):
+        for keyword in AGENT_KEYWORDS:
+            if keyword in word:
+                if _has_negation_before(words, index):
+                    break
+                return AgentKeywordMatch(
+                    matched=keyword,
+                    context=_build_context(words, index),
+                )
+    if AGENT_ABBREVIATION_PATTERN.search(text):
+        return AgentKeywordMatch(matched="ан", context="ан")
+    return None
+
+
+def _selfcheck_agent_keyword_filter() -> None:
+    cases = [
+        ("Без рієлторів!", "", False),
+        ("Рієлтор. Комісія 50%", "", True),
+        ("Без комісії", "", False),
+    ]
+    for title, description, expected in cases:
+        result = find_agent_keyword_match(title, description) is not None
+        assert result is expected, f"Unexpected result for: {title}"
 
 
 def main() -> None:
@@ -119,10 +165,18 @@ def main() -> None:
                 continue
             if not listing_data:
                 continue
-            if config.agent_keywords_filter and has_agent_keywords(
-                listing_data.title, listing_data.description
-            ):
-                logger.info("Skip (keyword agent): %s", listing_data.url)
+            match = None
+            if config.agent_keywords_filter:
+                match = find_agent_keyword_match(
+                    listing_data.title, listing_data.description
+                )
+            if match:
+                logger.info(
+                    'Skip (keyword agent): %s matched="%s" context="%s"',
+                    listing_data.url,
+                    match.matched,
+                    match.context,
+                )
                 continue
             if repository.add_listing(session, listing_data):
                 new_count += 1
@@ -161,4 +215,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if os.getenv("RUN_SELFTESTS") == "1":
+        _selfcheck_agent_keyword_filter()
     main()
