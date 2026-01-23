@@ -144,12 +144,25 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
         title_tag = soup.find("h1")
         if title_tag:
             title = title_tag.get_text(strip=True)
+        if not title:
+            meta_title = soup.find("meta", property="og:title")
+            if meta_title:
+                title = meta_title.get("content")
+
     if not price:
-        price_tag = soup.select_one('[data-testid="ad-price"]') or soup.find(
-            "h3", attrs={"data-testid": "ad-price"}
-        )
-        if price_tag:
-            price = price_tag.get_text(strip=True)
+        for attr in ["data-testid", "data-test-id", "data-cy", "id", "class"]:
+            price_tag = soup.find(attrs={attr: re.compile("price", re.IGNORECASE)})
+            if price_tag:
+                price = price_tag.get_text(" ", strip=True)
+                if price:
+                    break
+    if not price:
+        meta_price = soup.find("meta", property="product:price:amount")
+        if not meta_price:
+            meta_price = soup.find("meta", property="og:price:amount")
+        if meta_price:
+            price = meta_price.get("content")
+
     if not description:
         desc_tag = soup.select_one('[data-testid="ad-description"]') or soup.find(
             "div", attrs={"data-cy": "ad_description"}
@@ -157,25 +170,60 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
         if desc_tag:
             description = desc_tag.get_text(" ", strip=True)
     if not location:
-        location_tag = soup.select_one('[data-testid="location-date"]')
+        location_tag = (
+            soup.select_one('[data-testid="location-date"]')
+            or soup.select_one('[data-testid*="location"]')
+            or soup.find("address")
+        )
         if location_tag:
             location = location_tag.get_text(" ", strip=True)
-    if not photos:
-        for img in soup.select("img"):
-            src = img.get("src") or img.get("data-src")
-            if not src or "olx" not in src:
-                continue
-            if src not in photos:
-                photos.append(src)
-            if len(photos) >= 10:
-                break
+        if not location:
+            breadcrumb = soup.select_one('[data-testid*="breadcrumb"]')
+            if not breadcrumb:
+                breadcrumb = soup.find("nav", attrs={"aria-label": re.compile("breadcrumb", re.I)})
+            if breadcrumb:
+                location = breadcrumb.get_text(" ", strip=True)
 
-    if not all([title, price, description, location]):
-        LOGGER.warning("Skipping listing with missing fields: %s", url)
+    photo_candidates: List[str] = []
+    og_image = soup.find("meta", property="og:image")
+    if og_image and og_image.get("content"):
+        photo_candidates.append(og_image["content"])
+    for img in soup.select("img"):
+        src = img.get("src") or img.get("data-src") or img.get("data-srcset")
+        if not src:
+            continue
+        photo_candidates.append(src)
+    for candidate in photo_candidates:
+        if candidate not in photos:
+            photos.append(candidate)
+        if len(photos) >= 10:
+            break
+
+    missing_fields = []
+    if not title:
+        missing_fields.append("title")
+    if not price:
+        missing_fields.append("price")
+    if not location:
+        missing_fields.append("location")
+    if not description:
+        missing_fields.append("description")
+    if not photos:
+        missing_fields.append("photos")
+
+    if not title or not price:
+        LOGGER.warning(
+            "Skipping listing with missing fields: %s missing=%s",
+            url,
+            ",".join(missing_fields),
+        )
         return None
 
+    description = description or ""
+    location = location or ""
+
     label_text = extract_owner_label(soup)
-    owner = is_owner(label_text, description or "")
+    owner = is_owner(label_text, description)
 
     listing = ListingData(
         source="olx",
