@@ -12,5 +12,6 @@
 
 Set the following environment variables:
 
+- `OLX_SEARCH_URL` (example: `https://www.olx.ua/nedvizhimost/kvartiry/?search%5Bprivate_business%5D=private`)
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
