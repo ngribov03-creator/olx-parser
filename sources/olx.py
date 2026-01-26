@@ -55,37 +55,27 @@ def extract_json_ld(soup: BeautifulSoup) -> Optional[dict]:
     return None
 
 
-def _looks_like_breadcrumbs(text: str) -> bool:
-    lowered = text.lower().strip()
-    if not lowered:
-        return True
-    if "olx.ua" in lowered or "olx" in lowered:
-        return True
-    if "/d/" in lowered or "http://" in lowered or "https://" in lowered:
-        return True
-    if "uk/obyavlenie" in lowered or "obyavlenie" in lowered:
-        return True
-    if "/" in lowered:
-        return True
-    return False
+INVALID_LOCATION_MARKERS = {"obyavlenie", "оголошення", "україна"}
 
 
-def _is_region_only(text: str) -> bool:
-    lowered = text.lower().strip()
-    if not lowered:
-        return True
-    if "," in lowered:
-        return False
-    return bool(re.search(r"\b(область|обл\.?|район)\b", lowered))
+def _normalize_location(text: str) -> Optional[str]:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if any(marker in lowered for marker in INVALID_LOCATION_MARKERS):
+        return None
+    return cleaned
 
 
 def _extract_location_from_html(soup: BeautifulSoup) -> Optional[str]:
     location_tag = soup.select_one('[data-testid="location"]')
-    if location_tag:
-        text = location_tag.get_text(" ", strip=True)
-        if text and not _looks_like_breadcrumbs(text) and not _is_region_only(text):
-            return text
-    return None
+    if not location_tag:
+        return None
+    city_tag = location_tag.find("p")
+    if not city_tag:
+        return None
+    return _normalize_location(city_tag.get_text(" ", strip=True) or "")
 
 
 def _extract_location_from_json(json_ld: Optional[dict]) -> Optional[str]:
@@ -95,17 +85,16 @@ def _extract_location_from_json(json_ld: Optional[dict]) -> Optional[str]:
     if isinstance(location, dict):
         name = location.get("name")
         if isinstance(name, str):
-            cleaned = name.strip()
-            if cleaned and not _looks_like_breadcrumbs(cleaned):
-                return cleaned
+            return _normalize_location(name)
+        return None
     if isinstance(location, list):
         for entry in location:
             if isinstance(entry, dict):
                 name = entry.get("name")
                 if isinstance(name, str):
-                    cleaned = name.strip()
-                    if cleaned and not _looks_like_breadcrumbs(cleaned):
-                        return cleaned
+                    normalized = _normalize_location(name)
+                    if normalized:
+                        return normalized
     return None
 
 
@@ -120,67 +109,47 @@ def extract_location(soup: BeautifulSoup, json_ld: Optional[dict]) -> Optional[s
 
 
 def extract_price(soup: BeautifulSoup) -> Optional[str]:
-    price_tag = soup.select_one('[data-testid="ad-price-container"] h3')
+    price_tag = soup.select_one('h3[data-testid="ad-price-container"]')
     if not price_tag:
         return None
     text = price_tag.get_text(" ", strip=True)
-    return text or None
+    if not text:
+        return None
+    normalized = re.sub(r"\s+", " ", text.replace("\xa0", " ")).strip()
+    number_match = re.search(r"(\d[\d\s.,]*)", normalized)
+    currency_match = re.search(r"(грн|₴|€|\$|£)", normalized)
+    if not number_match or not currency_match:
+        return None
+    number = number_match.group(1).replace(" ", "").replace("\xa0", "").strip()
+    number = number.replace(",", ".")
+    currency = currency_match.group(1)
+    return f"{number} {currency}"
 
 
-def _extract_area_from_parameters(soup: BeautifulSoup) -> Optional[str]:
-    for tag in soup.find_all("p"):
-        text = tag.get_text(" ", strip=True)
-        if not text:
-            continue
-        match = re.search(
-            r"Загальна площа\s*:??\s*(\d+(?:[.,]\d+)?)\s*(м²|м2|кв\.?\s*м|кв\s*м|кв\.м)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if match:
-            number = match.group(1).strip()
-            return f"{number} м²"
-    return None
-
-
-def _extract_area_from_text(title: str, description: str) -> Optional[str]:
-    combined = f"{title} {description}"
-    match = re.search(
-        r"(\d+(?:[.,]\d+)?)\s*(?:m2|м2|м²|кв\.?\s*м|кв\s*м|кв\.м)",
-        combined,
-        flags=re.IGNORECASE,
-    )
+def extract_area(soup: BeautifulSoup) -> Optional[str]:
+    area_tag = soup.select_one("p.css-13x8d99")
+    if not area_tag:
+        return None
+    text = area_tag.get_text(" ", strip=True)
+    if not text:
+        return None
+    match = re.search(r"(\d+(?:[.,]\d+)?)", text)
     if not match:
         return None
-    number = match.group(1).strip()
-    return f"{number} м²" if number else None
-
-
-def extract_area(soup: BeautifulSoup, title: str, description: str) -> Optional[str]:
-    area = _extract_area_from_parameters(soup)
-    if area:
-        return area
-    if not title or description is None:
-        return None
-    return _extract_area_from_text(title, description)
+    return match.group(1).replace(",", ".")
 
 
 def extract_description(
     soup: BeautifulSoup, json_data: Optional[dict]
 ) -> Optional[str]:
-    description = None
-    if json_data:
-        raw = json_data.get("description")
-        if isinstance(raw, str):
-            description = raw
-    if not description:
-        desc_tag = (
-            soup.select_one('[data-testid="ad_description"]')
-            or soup.select_one('[data-testid="ad-description"]')
-            or soup.find("div", attrs={"data-cy": "ad_description"})
-        )
-        if desc_tag:
-            description = desc_tag.get_text(" ", strip=True)
+    desc_tag = (
+        soup.select_one('[data-testid="ad_description"]')
+        or soup.select_one('[data-testid="ad-description"]')
+        or soup.find("div", attrs={"data-cy": "ad_description"})
+    )
+    if not desc_tag:
+        return None
+    description = desc_tag.get_text("\n", strip=True)
     if not description:
         return None
     cleaned = re.sub(r"\r\n?", "\n", description)
@@ -273,12 +242,43 @@ def extract_phone(soup: BeautifulSoup, json_ld: Optional[dict]) -> Optional[str]
         phone_from_json = _find_phone_in_json(json_ld)
         if phone_from_json:
             return phone_from_json
-    tel_link = soup.select_one('a[href^="tel:"]')
+    tel_link = soup.select_one('a[data-testid="contact-phone"][href^="tel:"]')
     if tel_link:
         href = tel_link.get("href", "")
         phone = href.replace("tel:", "", 1).strip()
         if phone:
             return _normalize_phone(phone)
+    return None
+
+
+def _clean_title(title: str) -> Optional[str]:
+    if not title:
+        return None
+    cleaned = re.sub(
+        r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\u2600-\u27BF]+",
+        "",
+        title,
+    )
+    cleaned = re.sub(
+        r"\b(olx|оголошення|объявление|obyavlenie)\b",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -")
+    return cleaned or None
+
+
+def extract_title(soup: BeautifulSoup) -> Optional[str]:
+    title_tag = soup.select_one("h4.css-1au435n")
+    if title_tag:
+        return _clean_title(title_tag.get_text(" ", strip=True))
+    title_tag = soup.find("h1")
+    if title_tag:
+        return _clean_title(title_tag.get_text(" ", strip=True))
+    meta_title = soup.find("meta", property="og:title")
+    if meta_title:
+        return _clean_title(meta_title.get("content", ""))
     return None
 
 
@@ -295,7 +295,6 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
     created_at = datetime.utcnow()
 
     if json_ld:
-        title = json_ld.get("name")
         images = json_ld.get("image")
         if isinstance(images, list):
             photos = images
@@ -308,22 +307,13 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
             except ValueError:
                 created_at = datetime.utcnow()
 
-    if not title:
-        title_tag = soup.find("h1")
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-        if not title:
-            meta_title = soup.find("meta", property="og:title")
-            if meta_title:
-                title = meta_title.get("content")
+    title = extract_title(soup)
 
     price = extract_price(soup)
 
     description = extract_description(soup, json_ld)
     location = extract_location(soup, json_ld)
-    if location and _looks_like_breadcrumbs(location):
-        location = None
-    area = extract_area(soup, title or "", description or "")
+    area = extract_area(soup)
 
     photo_candidates: List[str] = []
     og_image = soup.find("meta", property="og:image")
