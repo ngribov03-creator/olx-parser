@@ -70,26 +70,6 @@ def _looks_like_breadcrumbs(text: str) -> bool:
     return False
 
 
-def _fallback_location_from_url(url: str) -> Optional[str]:
-    parsed = urlparse(url)
-    segments = [segment for segment in parsed.path.split("/") if segment]
-    for segment in reversed(segments):
-        candidate = segment.replace("-", " ").strip()
-        if not candidate:
-            continue
-        if "." in candidate or re.search(r"\d", candidate):
-            continue
-        if re.search(r"obyavlenie", candidate, flags=re.IGNORECASE):
-            return None
-        if _looks_like_breadcrumbs(candidate):
-            return None
-        if re.search(r"\bID[0-9A-Za-z]+\b", segment):
-            continue
-        if len(candidate) <= 40:
-            return candidate
-    return None
-
-
 def _is_region_only(text: str) -> bool:
     lowered = text.lower().strip()
     if not lowered:
@@ -100,25 +80,10 @@ def _is_region_only(text: str) -> bool:
 
 
 def _extract_location_from_html(soup: BeautifulSoup) -> Optional[str]:
-    seller_card = soup.select_one('[data-testid="seller_card"]')
-    if seller_card:
-        for tag in seller_card.find_all("p"):
-            text = tag.get_text(" ", strip=True)
-            if not text:
-                continue
-            if text.lower() in {"місцезнаходження", "местоположение", "location"}:
-                continue
-            if len(text) > 40:
-                continue
-            if _looks_like_breadcrumbs(text):
-                continue
-            if _is_region_only(text):
-                continue
-            return text
-    location_tag = soup.select_one('[data-testid="location-date"]')
+    location_tag = soup.select_one('[data-testid="location"]')
     if location_tag:
         text = location_tag.get_text(" ", strip=True)
-        if text and not _looks_like_breadcrumbs(text):
+        if text and not _looks_like_breadcrumbs(text) and not _is_region_only(text):
             return text
     return None
 
@@ -126,28 +91,32 @@ def _extract_location_from_html(soup: BeautifulSoup) -> Optional[str]:
 def _extract_location_from_json(json_ld: Optional[dict]) -> Optional[str]:
     if not json_ld:
         return None
-    address = json_ld.get("address")
-    if isinstance(address, dict):
-        locality = address.get("addressLocality") or address.get("addressRegion")
-        if isinstance(locality, str):
-            cleaned = locality.strip()
+    location = json_ld.get("location")
+    if isinstance(location, dict):
+        name = location.get("name")
+        if isinstance(name, str):
+            cleaned = name.strip()
             if cleaned and not _looks_like_breadcrumbs(cleaned):
                 return cleaned
-    if isinstance(address, str):
-        cleaned = address.strip()
-        if cleaned and not _looks_like_breadcrumbs(cleaned):
-            return cleaned
+    if isinstance(location, list):
+        for entry in location:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str):
+                    cleaned = name.strip()
+                    if cleaned and not _looks_like_breadcrumbs(cleaned):
+                        return cleaned
     return None
 
 
-def extract_location(soup: BeautifulSoup, json_ld: Optional[dict], url: str) -> Optional[str]:
+def extract_location(soup: BeautifulSoup, json_ld: Optional[dict]) -> Optional[str]:
     location = _extract_location_from_html(soup)
     if location:
         return location
     location = _extract_location_from_json(json_ld)
     if location:
         return location
-    return _fallback_location_from_url(url)
+    return None
 
 
 def extract_price(soup: BeautifulSoup) -> Optional[str]:
@@ -351,7 +320,7 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
     price = extract_price(soup)
 
     description = extract_description(soup, json_ld)
-    location = extract_location(soup, json_ld, url)
+    location = extract_location(soup, json_ld)
     if location and _looks_like_breadcrumbs(location):
         location = None
     area = extract_area(soup, title or "", description or "")

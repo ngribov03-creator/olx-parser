@@ -212,6 +212,12 @@ def main() -> None:
             total_to_send = len(send_queue)
             urgent_sent = 0
             for index, listing_data in enumerate(send_queue, start=1):
+                if not listing_data.location:
+                    logger.info(
+                        "Skip listing: location not found (HTML/JSON) url=%s",
+                        listing_data.url,
+                    )
+                    continue
                 logger.info("Sending %s/%s: %s", index, total_to_send, listing_data.url)
                 try:
                     if telegram_client.send_listing(listing_data):
