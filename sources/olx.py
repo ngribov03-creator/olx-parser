@@ -55,6 +55,204 @@ def extract_json_ld(soup: BeautifulSoup) -> Optional[dict]:
     return None
 
 
+_BREADCRUMB_KEYWORDS = (
+    "головна",
+    "нерухом",
+    "недвижим",
+    "продаж",
+    "прода",
+    "оренда",
+    "аренда",
+    "квартир",
+    "будин",
+    "будинок",
+    "дом",
+    "комерц",
+    "гараж",
+    "парков",
+    "ділян",
+    "земл",
+    "розділ",
+    "раздел",
+    "категор",
+)
+
+_LOCATION_BLOCKLIST = {
+    "d",
+    "uk",
+    "ua",
+    "nedvizhimost",
+    "neruhomist",
+    "nerukhomist",
+    "kvartiry",
+    "kvartyry",
+    "kvartira",
+    "kvartira-",
+    "dom",
+    "doma",
+    "garazhi",
+    "parking",
+    "parkomesta",
+    "komercheskaya-nedvizhimost",
+    "komertsiyna-nerukhomist",
+    "prodazha",
+    "prodazh",
+    "orenda",
+    "arenda",
+}
+
+
+def _looks_like_breadcrumbs(text: str) -> bool:
+    lowered = text.lower()
+    if "головна" in lowered:
+        return True
+    keyword_hits = sum(1 for keyword in _BREADCRUMB_KEYWORDS if keyword in lowered)
+    if keyword_hits >= 3:
+        return True
+    if any(separator in text for separator in (">", "→", "|", "/")) and keyword_hits >= 2:
+        return True
+    if len(text.split()) >= 6 and keyword_hits >= 2:
+        return True
+    return False
+
+
+def _format_address(address: dict) -> Optional[str]:
+    if not address:
+        return None
+    parts = [
+        address.get("streetAddress"),
+        address.get("addressLocality"),
+        address.get("addressRegion"),
+    ]
+    cleaned_parts = [part.strip() for part in parts if isinstance(part, str) and part.strip()]
+    if not cleaned_parts:
+        return None
+    return ", ".join(dict.fromkeys(cleaned_parts))
+
+
+def _extract_location_from_json(json_data: Optional[dict]) -> Optional[str]:
+    if not json_data:
+        return None
+    address = json_data.get("address")
+    if isinstance(address, dict):
+        formatted = _format_address(address)
+        if formatted:
+            return formatted
+    location = json_data.get("location")
+    if isinstance(location, dict):
+        if isinstance(location.get("name"), str) and location.get("name").strip():
+            return location["name"].strip()
+        address = location.get("address")
+        if isinstance(address, dict):
+            formatted = _format_address(address)
+            if formatted:
+                return formatted
+    if isinstance(location, str) and location.strip():
+        return location.strip()
+    return None
+
+
+def _clean_location_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    cleaned = re.split(r"[>→]", text, maxsplit=1)[0]
+    cleaned = re.sub(r"\s*[-–—]\s*\d{1,2}.*", "", cleaned)
+    cleaned = re.sub(r"\s*•\s*.*", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,|-")
+    return cleaned or None
+
+
+def _extract_location_from_html(soup: BeautifulSoup) -> Optional[str]:
+    candidates = [
+        soup.select_one('[data-testid="location-date"]'),
+        soup.select_one('[data-testid*="location"]'),
+        soup.find("address"),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        text = candidate.get_text(" ", strip=True)
+        cleaned = _clean_location_text(text)
+        if cleaned and not _looks_like_breadcrumbs(cleaned):
+            return cleaned
+    breadcrumb = soup.select_one('[data-testid*="breadcrumb"]')
+    if not breadcrumb:
+        breadcrumb = soup.find("nav", attrs={"aria-label": re.compile("breadcrumb", re.I)})
+    if breadcrumb:
+        text = breadcrumb.get_text(" ", strip=True)
+        cleaned = _clean_location_text(text or "")
+        if cleaned and not _looks_like_breadcrumbs(cleaned):
+            return cleaned
+    return None
+
+
+def _fallback_location_from_url(url: str) -> Optional[str]:
+    parsed = urlparse(url)
+    for segment in parsed.path.split("/"):
+        segment = segment.strip().lower()
+        if not segment:
+            continue
+        if segment in _LOCATION_BLOCKLIST:
+            continue
+        if any(char.isdigit() for char in segment):
+            continue
+        if segment.startswith("id"):
+            continue
+        if sum(1 for keyword in _BREADCRUMB_KEYWORDS if keyword in segment) >= 1:
+            continue
+        if len(segment) < 3:
+            continue
+        return segment.replace("-", " ").title()
+    return None
+
+
+def extract_location(
+    soup: BeautifulSoup, json_data: Optional[dict], url: str
+) -> Optional[str]:
+    location = _extract_location_from_json(json_data)
+    if location and not _looks_like_breadcrumbs(location):
+        cleaned = _clean_location_text(location)
+        if cleaned and not _looks_like_breadcrumbs(cleaned):
+            return cleaned
+    location = _extract_location_from_html(soup)
+    if location and not _looks_like_breadcrumbs(location):
+        return location
+    fallback = _fallback_location_from_url(url)
+    if fallback and not _looks_like_breadcrumbs(fallback):
+        return fallback
+    return None
+
+
+def extract_description(
+    soup: BeautifulSoup, json_data: Optional[dict]
+) -> Optional[str]:
+    description = None
+    if json_data:
+        raw = json_data.get("description")
+        if isinstance(raw, str):
+            description = raw
+    if not description:
+        desc_tag = soup.select_one('[data-testid="ad-description"]') or soup.find(
+            "div", attrs={"data-cy": "ad_description"}
+        )
+        if desc_tag:
+            description = desc_tag.get_text(" ", strip=True)
+    if not description:
+        return None
+    cleaned = re.sub(r"\r\n?", "\n", description)
+    lines = [line.strip() for line in cleaned.splitlines()]
+    collapsed: list[str] = []
+    for line in lines:
+        if line:
+            collapsed.append(line)
+        elif collapsed and collapsed[-1] != "":
+            collapsed.append("")
+    cleaned = "\n".join(collapsed).strip()
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned or None
+
+
 def extract_owner_label(soup: BeautifulSoup) -> Optional[str]:
     candidates = [
         "Частное лицо",
@@ -153,15 +351,11 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
 
     if json_ld:
         title = json_ld.get("name")
-        description = json_ld.get("description")
         price_data = json_ld.get("offers", {})
         if isinstance(price_data, dict):
             price = price_data.get("price") or price_data.get("priceSpecification", {}).get(
                 "price"
             )
-        address = json_ld.get("address", {})
-        if isinstance(address, dict):
-            location = address.get("addressLocality") or address.get("streetAddress")
         images = json_ld.get("image")
         if isinstance(images, list):
             photos = images
@@ -197,26 +391,8 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
         if meta_price:
             price = meta_price.get("content")
 
-    if not description:
-        desc_tag = soup.select_one('[data-testid="ad-description"]') or soup.find(
-            "div", attrs={"data-cy": "ad_description"}
-        )
-        if desc_tag:
-            description = desc_tag.get_text(" ", strip=True)
-    if not location:
-        location_tag = (
-            soup.select_one('[data-testid="location-date"]')
-            or soup.select_one('[data-testid*="location"]')
-            or soup.find("address")
-        )
-        if location_tag:
-            location = location_tag.get_text(" ", strip=True)
-        if not location:
-            breadcrumb = soup.select_one('[data-testid*="breadcrumb"]')
-            if not breadcrumb:
-                breadcrumb = soup.find("nav", attrs={"aria-label": re.compile("breadcrumb", re.I)})
-            if breadcrumb:
-                location = breadcrumb.get_text(" ", strip=True)
+    description = extract_description(soup, json_ld)
+    location = extract_location(soup, json_ld, url)
 
     photo_candidates: List[str] = []
     og_image = soup.find("meta", property="og:image")
@@ -253,8 +429,10 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
         )
         return None
 
+    if not location:
+        LOGGER.info("Missing location: %s", url)
+        location = _fallback_location_from_url(url) or "Ужгород"
     description = description or ""
-    location = location or ""
 
     label_text = extract_owner_label(soup)
     owner = is_owner(label_text, description)

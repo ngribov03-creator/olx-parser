@@ -28,12 +28,6 @@ class TelegramClient:
     def _api_url(self, method: str) -> str:
         return f"https://api.telegram.org/bot{self._config.token}/{method}"
 
-    def _extract_city(self, location: str, title: str) -> str:
-        if location:
-            return location.split(",")[0].strip()
-        title_parts = [part.strip() for part in re.split(r"[|,-]", title) if part.strip()]
-        return title_parts[-1] if title_parts else "Невідоме місто"
-
     def _clean_location(self, location: str) -> Optional[str]:
         if not location:
             return None
@@ -98,24 +92,23 @@ class TelegramClient:
             return "🏠"
         return "📦"
 
-    def _clean_description(self, description: str) -> str:
+    def _clean_description(self, description: str) -> Optional[str]:
+        if not description:
+            return None
         raw_lines = [line.strip() for line in description.splitlines()]
         filtered_lines = []
         seen = set()
         for line in raw_lines:
             if not line:
-                filtered_lines.append("")
                 continue
             lowered = line.lower()
-            if any(
-                marker in lowered
-                for marker in ("категор", "категорія", "рубрика", "розділ", "раздел", "olx")
-            ):
+            if "olx id" in lowered:
                 continue
-            if any(
-                marker in lowered
-                for marker in ("olx id", "збережено", "дата", "час", "телефон", "показати телефон")
-            ):
+            if "збережено" in lowered:
+                continue
+            if "телефон" in lowered and "відкр" in lowered and "оголош" in lowered:
+                continue
+            if "показати телефон" in lowered:
                 continue
             if re.search(r"\b(id|olx)\b", lowered) and re.search(r"\d", lowered):
                 continue
@@ -123,44 +116,27 @@ class TelegramClient:
                 continue
             seen.add(lowered)
             filtered_lines.append(line)
-        cleaned = " ".join(line for line in filtered_lines if line)
+        cleaned = " ".join(filtered_lines)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        if len(cleaned) > 300:
-            trimmed = cleaned[:299].rstrip()
+        if not cleaned:
+            return None
+        max_length = 650
+        if len(cleaned) > max_length:
+            trimmed = cleaned[: max_length - 1].rstrip()
             cleaned = f"{trimmed}…"
         return cleaned
-
-    def _extract_meta_lines(self, listing: ListingData) -> list[str]:
-        meta_lines: list[str] = []
-        cleaned_location = self._clean_location(listing.location or "")
-        if cleaned_location:
-            city = self._extract_city(cleaned_location, listing.title)
-            if city:
-                meta_lines.append(f"📍 {city}")
-        lowered = listing.description.lower()
-        floor_match = re.search(r"(\d{1,2})\s*(?:поверх|этаж)", lowered)
-        if floor_match:
-            meta_lines.append(f"Поверх: {floor_match.group(1)}")
-        building_types = ("новобудова", "вторичка", "цегляний", "панельний", "моноліт")
-        building_match = next((b for b in building_types if b in lowered), None)
-        if building_match:
-            meta_lines.append(f"Тип: {building_match}")
-        return meta_lines[:3]
 
     def _format_message(self, listing: ListingData) -> str:
         cleaned_description = self._clean_description(listing.description)
         emoji = self._detect_listing_emoji(listing.title, listing.description)
         clean_title = self._clean_title(listing.title)
-        meta_lines = self._extract_meta_lines(listing)
-        lines = [
-            f"{emoji} {clean_title}",
-            f"💰 {listing.price}",
-            *meta_lines,
-            "",
-            "📝 Опис:",
-            cleaned_description or "—",
-        ]
-        return "\n".join(line for line in lines if line)
+        cleaned_location = self._clean_location(listing.location or "")
+        lines = [f"{emoji} {clean_title}", f"💰 {listing.price}"]
+        if cleaned_location:
+            lines.append(f"📍 {cleaned_location}")
+        if cleaned_description:
+            lines.extend(["", "📝 Опис:", cleaned_description])
+        return "\n".join(lines)
 
     def _build_reply_markup(self, listing: ListingData) -> dict[str, object]:
         return {
