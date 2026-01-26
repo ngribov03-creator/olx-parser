@@ -40,38 +40,44 @@ def parse_external_id(url: str, fallback: Optional[str] = None) -> str:
     return fallback or url
 
 
-def _iter_json_ld_entries(data: object) -> Iterable[dict]:
+def _iter_json_ld_objects(data: object) -> List[dict]:
     if isinstance(data, dict):
         graph = data.get("@graph")
         if isinstance(graph, list):
-            for item in graph:
-                if isinstance(item, dict):
-                    yield item
-            return
-        yield data
-        return
+            return [item for item in graph if isinstance(item, dict)]
+        return [data]
     if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                yield item
+        return [item for item in data if isinstance(item, dict)]
+    return []
 
 
-def _iter_json_ld(soup: BeautifulSoup) -> Iterable[dict]:
+def _extract_json_ld_objects(soup: BeautifulSoup) -> List[dict]:
+    entries: List[dict] = []
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        raw = script.string or ""
+        if not raw.strip():
+            continue
         try:
-            data = json.loads(script.string or "")
+            data = json.loads(raw)
         except json.JSONDecodeError:
             continue
-        yield from _iter_json_ld_entries(data)
+        entries.extend(_iter_json_ld_objects(data))
+    return entries
 
 
 def extract_json_ld(soup: BeautifulSoup) -> Optional[dict]:
-    for item in _iter_json_ld(soup):
-        return item
-    return None
+    entries = _extract_json_ld_objects(soup)
+    return entries[0] if entries else None
 
 
-INVALID_LOCATION_MARKERS = {"obyavlenie", "оголошення", "україна"}
+INVALID_LOCATION_MARKERS = {
+    "obyavlenie",
+    "оголошення",
+    "україна",
+    "нерухомість",
+    "недвижимость",
+    "real estate",
+}
 
 
 def _normalize_location(text: str) -> Optional[str]:
@@ -85,12 +91,12 @@ def _normalize_location(text: str) -> Optional[str]:
 
 
 def _extract_location_from_html(soup: BeautifulSoup) -> Optional[str]:
-    location_tag = soup.select_one('[data-testid="location"]')
+    location_tag = soup.select_one('[data-testid="location"]') or soup.select_one(
+        '[data-testid="location-date"]'
+    )
     if not location_tag:
         return None
-    city_tag = location_tag.find("p")
-    if not city_tag:
-        return None
+    city_tag = location_tag.find("p") or location_tag
     return _normalize_location(city_tag.get_text(" ", strip=True) or "")
 
 
@@ -104,80 +110,125 @@ def _get_first_offer(offers: object) -> Optional[dict]:
     return None
 
 
-def _extract_location_from_address(address: object) -> Optional[str]:
+def _extract_location_from_address(address: object, source_prefix: str) -> tuple[Optional[str], Optional[str]]:
     if isinstance(address, dict):
-        for key in ("addressLocality", "addressRegion", "addressCountry", "name"):
+        parts: List[str] = []
+        sources: List[str] = []
+        for key in ("streetAddress", "addressLocality", "addressRegion"):
             value = address.get(key)
             if isinstance(value, str):
-                normalized = _normalize_location(value)
-                if normalized:
-                    return normalized
+                cleaned = value.strip()
+                if cleaned:
+                    parts.append(cleaned)
+                    sources.append(f"{source_prefix}.{key}")
+        if parts:
+            combined = _normalize_location(", ".join(parts))
+            if combined:
+                source = "+".join(sources)
+                return combined, source
+        name = address.get("name")
+        if isinstance(name, str):
+            normalized = _normalize_location(name)
+            if normalized:
+                return normalized, f"{source_prefix}.name"
+        for key in ("addressCountry",):
+            value = address.get(key)
             if isinstance(value, dict):
                 nested = value.get("name")
                 if isinstance(nested, str):
                     normalized = _normalize_location(nested)
                     if normalized:
-                        return normalized
-        return None
+                        return normalized, f"{source_prefix}.{key}.name"
+        return None, None
     if isinstance(address, list):
-        for item in address:
+        for index, item in enumerate(address):
             if isinstance(item, (dict, str)):
-                nested = _extract_location_from_address(item)
+                nested, source = _extract_location_from_address(item, f"{source_prefix}[{index}]")
                 if nested:
-                    return nested
-        return None
+                    return nested, source
+        return None, None
     if isinstance(address, str):
-        return _normalize_location(address)
-    return None
-
-
-def _extract_location_from_json_ld(obj: dict) -> Optional[str]:
-    address = obj.get("address")
-    if address:
-        normalized = _extract_location_from_address(address)
+        normalized = _normalize_location(address)
         if normalized:
-            return normalized
-    offers = _get_first_offer(obj.get("offers"))
-    if offers:
-        available = offers.get("availableAtOrFrom")
-        if isinstance(available, list):
-            available = next((item for item in available if isinstance(item, dict)), None)
-        if isinstance(available, dict):
-            offer_address = available.get("address")
-            if offer_address:
-                normalized = _extract_location_from_address(offer_address)
-                if normalized:
-                    return normalized
-    city = obj.get("city")
-    if isinstance(city, dict):
-        name = city.get("name")
+            return normalized, source_prefix
+    return None, None
+
+
+def _extract_location_from_location_field(
+    location_field: object, source_prefix: str
+) -> tuple[Optional[str], Optional[str]]:
+    if isinstance(location_field, dict):
+        name = location_field.get("name")
         if isinstance(name, str):
             normalized = _normalize_location(name)
             if normalized:
-                return normalized
-    for value in obj.values():
-        if isinstance(value, dict):
-            nested = _extract_location_from_json_ld(value)
+                return normalized, f"{source_prefix}.name"
+        address = location_field.get("address")
+        if address:
+            return _extract_location_from_address(address, f"{source_prefix}.address")
+        return None, None
+    if isinstance(location_field, list):
+        for index, item in enumerate(location_field):
+            nested, source = _extract_location_from_location_field(item, f"{source_prefix}[{index}]")
             if nested:
-                return nested
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict):
-                    nested = _extract_location_from_json_ld(item)
-                    if nested:
-                        return nested
-    return None
+                return nested, source
+    return None, None
+
+
+def _extract_location_from_json_ld_with_source(
+    json_ld_entries: Iterable[dict],
+) -> tuple[Optional[str], Optional[str], Optional[dict]]:
+    for entry in json_ld_entries:
+        location_field = entry.get("location")
+        if location_field:
+            location, source = _extract_location_from_location_field(location_field, "json_ld.location")
+            if location:
+                return location, source, entry
+        address = entry.get("address")
+        if address:
+            location, source = _extract_location_from_address(address, "json_ld.address")
+            if location:
+                return location, source, entry
+        offers = entry.get("offers")
+        if offers:
+            offer_list = offers if isinstance(offers, list) else [offers]
+            for index, offer in enumerate(offer_list):
+                if not isinstance(offer, dict):
+                    continue
+                available = offer.get("availableAtOrFrom")
+                if isinstance(available, list):
+                    available_items = available
+                else:
+                    available_items = [available]
+                for sub_index, item in enumerate(available_items):
+                    if isinstance(item, dict) and item.get("address"):
+                        location, source = _extract_location_from_address(
+                            item["address"],
+                            f"json_ld.offers[{index}].availableAtOrFrom[{sub_index}].address",
+                        )
+                        if location:
+                            return location, source, entry
+                offer_address = offer.get("address")
+                if offer_address:
+                    location, source = _extract_location_from_address(
+                        offer_address,
+                        f"json_ld.offers[{index}].address",
+                    )
+                    if location:
+                        return location, source, entry
+    return None, None, None
+
+
+def _extract_location_from_json_ld(json_ld_entries: Iterable[dict]) -> Optional[str]:
+    location, _, _ = _extract_location_from_json_ld_with_source(json_ld_entries)
+    return location
 
 
 def extract_location(soup: BeautifulSoup, json_ld_entries: Iterable[dict]) -> Optional[str]:
-    location = _extract_location_from_html(soup)
+    location = _extract_location_from_json_ld(json_ld_entries)
     if location:
         return location
-    for entry in json_ld_entries:
-        location = _extract_location_from_json_ld(entry)
-        if location:
-            return location
-    return None
+    return _extract_location_from_html(soup)
 
 
 def _is_product_type(json_ld: dict) -> bool:
@@ -189,27 +240,50 @@ def _is_product_type(json_ld: dict) -> bool:
     return False
 
 
-def _extract_price_from_json_ld(json_ld_entries: Iterable[dict]) -> Optional[str]:
+def _normalize_price_value(value: object) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return None
+
+
+def _extract_price_from_json_ld_with_source(
+    json_ld_entries: Iterable[dict],
+) -> tuple[Optional[str], Optional[str], Optional[dict]]:
     for entry in json_ld_entries:
         if not _is_product_type(entry) and "offers" not in entry:
             continue
-        offer = _get_first_offer(entry.get("offers"))
-        if not offer:
-            continue
-        price = offer.get("price")
-        currency = offer.get("priceCurrency")
-        if price in (None, ""):
-            continue
-        if isinstance(price, (int, float)):
-            price = str(price)
-        if isinstance(price, str):
-            price = price.strip()
-        if not price:
-            continue
-        if isinstance(currency, str) and currency.strip():
-            return f"{price} {currency.strip()}"
-        return price
-    return None
+        offers = entry.get("offers")
+        offer_list = offers if isinstance(offers, list) else [offers]
+        for index, offer in enumerate(offer_list):
+            if not isinstance(offer, dict):
+                continue
+            currency = offer.get("priceCurrency")
+            price_value = _normalize_price_value(offer.get("price"))
+            source_field = "price"
+            if not price_value:
+                price_value = _normalize_price_value(offer.get("lowPrice"))
+                source_field = "lowPrice"
+            if not price_value:
+                price_value = _normalize_price_value(offer.get("highPrice"))
+                source_field = "highPrice"
+            if not price_value:
+                continue
+            price = price_value
+            if isinstance(currency, str) and currency.strip():
+                price = f"{price_value} {currency.strip()}"
+            source = f"json_ld.offers[{index}].{source_field}"
+            return price, source, entry
+    return None, None, None
+
+
+def _extract_price_from_json_ld(json_ld_entries: Iterable[dict]) -> Optional[str]:
+    price, _, _ = _extract_price_from_json_ld_with_source(json_ld_entries)
+    return price
 
 
 def extract_price(soup: BeautifulSoup) -> Optional[str]:
@@ -388,7 +462,7 @@ def extract_title(soup: BeautifulSoup) -> Optional[str]:
 
 def parse_listing_details(html: str, url: str, external_id: str) -> Optional[ListingData]:
     soup = BeautifulSoup(html, "html.parser")
-    json_ld_entries = list(_iter_json_ld(soup))
+    json_ld_entries = _extract_json_ld_objects(soup)
     json_ld = json_ld_entries[0] if json_ld_entries else None
 
     title = None
@@ -417,9 +491,13 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
     price = extract_price(soup)
     if not price:
         price = _extract_price_from_json_ld(json_ld_entries)
+        if not price:
+            LOGGER.debug("Price missing for %s (json_ld_objects=%s)", url, len(json_ld_entries))
 
     description = extract_description(soup, json_ld)
     location = extract_location(soup, json_ld_entries)
+    if not location:
+        LOGGER.debug("Location missing for %s (json_ld_objects=%s)", url, len(json_ld_entries))
     area = extract_area(soup)
 
     photo_candidates: List[str] = []
