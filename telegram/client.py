@@ -34,6 +34,15 @@ class TelegramClient:
         title_parts = [part.strip() for part in re.split(r"[|,-]", title) if part.strip()]
         return title_parts[-1] if title_parts else "Невідоме місто"
 
+    def _clean_location(self, location: str) -> Optional[str]:
+        if not location:
+            return None
+        cleaned = re.split(r"[>→]", location, maxsplit=1)[0]
+        cleaned = re.sub(r"\s*[•|]\s*.*", "", cleaned)
+        cleaned = re.sub(r"\s*[-–—]\s*\d{1,2}.*", "", cleaned)
+        cleaned = cleaned.strip(" ,|-")
+        return cleaned or None
+
     def _detect_deal_type(self, title: str) -> str:
         lowered = title.lower()
         rent_keywords = ("оренда", "аренда", "здається", "сдается", "здаю", "сдам")
@@ -55,11 +64,39 @@ class TelegramClient:
             ).strip()
         return normalized or title.strip()
 
-    def _build_title(self, listing: ListingData) -> str:
-        deal_type = self._detect_deal_type(listing.title)
-        obj = self._extract_object(listing.title, deal_type)
-        city = self._extract_city(listing.location, listing.title)
-        return f"🏠 {deal_type} {obj} | {city}"
+    def _clean_title(self, title: str) -> str:
+        normalized = re.sub(r"\s+", " ", title).strip()
+        return normalized or title.strip()
+
+    def _detect_listing_emoji(self, title: str, description: str) -> str:
+        combined = f"{title} {description}".lower()
+        parking_keywords = (
+            "гараж",
+            "паркомісце",
+            "паркоместо",
+            "парков",
+            "машиномісце",
+            "машиноместо",
+            "паркинг",
+        )
+        commercial_keywords = (
+            "комерц",
+            "офіс",
+            "склад",
+            "складське",
+            "магазин",
+            "торгов",
+            "приміщення",
+            "коммерц",
+        )
+        home_keywords = ("квартира", "будинок", "дом", "house")
+        if any(keyword in combined for keyword in parking_keywords):
+            return "🚗"
+        if any(keyword in combined for keyword in commercial_keywords):
+            return "🏢"
+        if any(keyword in combined for keyword in home_keywords):
+            return "🏠"
+        return "📦"
 
     def _clean_description(self, description: str) -> str:
         raw_lines = [line.strip() for line in description.splitlines()]
@@ -75,67 +112,61 @@ class TelegramClient:
                 for marker in ("категор", "категорія", "рубрика", "розділ", "раздел", "olx")
             ):
                 continue
+            if any(
+                marker in lowered
+                for marker in ("olx id", "збережено", "дата", "час", "телефон", "показати телефон")
+            ):
+                continue
+            if re.search(r"\b(id|olx)\b", lowered) and re.search(r"\d", lowered):
+                continue
             if lowered in seen:
                 continue
             seen.add(lowered)
             filtered_lines.append(line)
-        cleaned = "\n".join(filtered_lines).strip()
-        if len(cleaned) > 500:
-            trimmed = cleaned[:499].rstrip()
+        cleaned = " ".join(line for line in filtered_lines if line)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if len(cleaned) > 300:
+            trimmed = cleaned[:299].rstrip()
             cleaned = f"{trimmed}…"
         return cleaned
 
-    def _build_house_line(self, description: str) -> Optional[str]:
-        lowered = description.lower()
-        parts = []
+    def _extract_meta_lines(self, listing: ListingData) -> list[str]:
+        meta_lines: list[str] = []
+        cleaned_location = self._clean_location(listing.location or "")
+        if cleaned_location:
+            city = self._extract_city(cleaned_location, listing.title)
+            if city:
+                meta_lines.append(f"📍 {city}")
+        lowered = listing.description.lower()
         floor_match = re.search(r"(\d{1,2})\s*(?:поверх|этаж)", lowered)
         if floor_match:
-            parts.append(f"{floor_match.group(1)} поверх")
-        if "ліфт" in lowered or "лифт" in lowered:
-            parts.append("ліфт")
+            meta_lines.append(f"Поверх: {floor_match.group(1)}")
         building_types = ("новобудова", "вторичка", "цегляний", "панельний", "моноліт")
         building_match = next((b for b in building_types if b in lowered), None)
         if building_match:
-            parts.append(building_match)
-        if not parts:
-            return None
-        return f"🏢 {' • '.join(parts)}"
+            meta_lines.append(f"Тип: {building_match}")
+        return meta_lines[:3]
 
     def _format_message(self, listing: ListingData) -> str:
         cleaned_description = self._clean_description(listing.description)
-        formatted_scraped_at = listing.scraped_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        phone = listing.phone
-        if phone:
-            phone_line = f"📞 Телефон: {phone}"
-        else:
-            phone_line = "📞 Телефон: відкрий оголошення → «Показати телефон»"
-        location_line = f"📍 {listing.location}" if listing.location else "📍 Локація не вказана"
-        house_line = self._build_house_line(listing.description)
-        owner_line = "👤 Від власника • без посередників" if listing.is_owner else None
-        no_pets_line = (
-            "🚫 Без домашніх тварин" if "без тварин" in cleaned_description.lower() else None
-        )
+        emoji = self._detect_listing_emoji(listing.title, listing.description)
+        clean_title = self._clean_title(listing.title)
+        meta_lines = self._extract_meta_lines(listing)
         lines = [
-            self._build_title(listing),
+            f"{emoji} {clean_title}",
             f"💰 {listing.price}",
-            location_line,
-            house_line,
-            "✨ Опис:",
+            *meta_lines,
+            "",
+            "📝 Опис:",
             cleaned_description or "—",
-            owner_line,
-            no_pets_line,
-            f"🆔 OLX ID: {listing.external_id}",
-            f"⏱ Збережено: {formatted_scraped_at}",
-            phone_line,
-            f"🔗 Посилання: {listing.url}",
         ]
         return "\n".join(line for line in lines if line)
 
     def _build_reply_markup(self, listing: ListingData) -> dict[str, object]:
         return {
             "inline_keyboard": [
-                [{"text": "🔍 Відкрити оголошення", "url": listing.url}],
-                [{"text": "📞 Показати телефон", "url": listing.url}],
+                [{"text": "Відкрити оголошення", "url": listing.url}],
+                [{"text": "Показати телефон", "url": listing.url}],
             ]
         }
 
