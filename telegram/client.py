@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 from dataclasses import dataclass
@@ -31,7 +32,8 @@ class TelegramClient:
     def _clean_location(self, location: str) -> Optional[str]:
         if not location:
             return None
-        cleaned = re.split(r"[>→]", location, maxsplit=1)[0]
+        location_parts = [part.strip() for part in re.split(r"[>→]", location) if part.strip()]
+        cleaned = location_parts[-1] if location_parts else location
         cleaned = re.sub(r"\s*[•|]\s*.*", "", cleaned)
         cleaned = re.sub(r"\s*[-–—]\s*\d{1,2}.*", "", cleaned)
         cleaned = cleaned.strip(" ,|-")
@@ -108,26 +110,47 @@ class TelegramClient:
         if not location:
             return None, None
         parts = [part.strip() for part in location.split(",") if part.strip()]
+        filtered_parts = [
+            part
+            for part in parts
+            if part.lower() not in {"україна", "украина"}
+        ]
+        parts = filtered_parts or parts
         if not parts:
             return None, None
         city = parts[0]
-        region = parts[-1] if len(parts) > 1 else None
+        region = parts[1] if len(parts) > 1 else None
         return city or None, region or None
 
-    def _split_price(self, price: str) -> tuple[str, Optional[str]]:
+    def _split_price(self, price: str) -> tuple[Optional[str], Optional[str]]:
         normalized = re.sub(r"\s+", " ", price).strip()
-        match = re.search(r"[\d\s.,]+", normalized)
-        if not match:
-            return normalized, None
-        amount = match.group(0).strip()
-        currency = (normalized[: match.start()] + normalized[match.end() :]).strip()
-        currency = currency or None
-        return amount, currency
+        amount_match = re.search(r"[\d\s]+(?:[.,]\d+)?", normalized)
+        currency_match = re.search(
+            r"(грн|uah|₴|\$|€|eur|usd)",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        if not amount_match or not currency_match:
+            return None, None
+        amount = amount_match.group(0).strip()
+        raw_currency = currency_match.group(0).lower()
+        currency = raw_currency
+        if raw_currency in {"грн", "uah", "₴"}:
+            currency = "грн"
+        elif raw_currency in {"usd", "$"}:
+            currency = "$"
+        elif raw_currency in {"eur", "€"}:
+            currency = "€"
+        return amount or None, currency or None
 
     def _clean_description(self, description: str) -> Optional[str]:
         if not description:
             return None
-        raw_lines = [line.strip() for line in description.splitlines()]
+        text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", description)
+        text = re.sub(r"(?i)</p\s*>", "\n", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = html.unescape(text)
+        raw_lines = [line.strip() for line in text.splitlines()]
         filtered_lines = []
         seen = set()
         for line in raw_lines:
@@ -138,21 +161,20 @@ class TelegramClient:
                 continue
             if "збережено" in lowered:
                 continue
-            if "телефон" in lowered and "відкр" in lowered and "оголош" in lowered:
-                continue
-            if "показати телефон" in lowered:
+            if "телефон" in lowered:
                 continue
             if re.search(r"\b(id|olx)\b", lowered) and re.search(r"\d", lowered):
                 continue
-            if lowered in seen:
+            normalized_line = re.sub(r"\s+", " ", lowered).strip()
+            if normalized_line in seen:
                 continue
-            seen.add(lowered)
-            filtered_lines.append(line)
+            seen.add(normalized_line)
+            filtered_lines.append(line.strip())
         cleaned = " ".join(filtered_lines)
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         if not cleaned:
             return None
-        max_length = 650
+        max_length = 500
         if len(cleaned) > max_length:
             trimmed = cleaned[: max_length - 1].rstrip()
             cleaned = f"{trimmed}…"
@@ -163,34 +185,37 @@ class TelegramClient:
         clean_title = self._clean_title(listing.title)
         cleaned_location = self._clean_location(listing.location or "")
         city, region = self._split_location_parts(cleaned_location or "")
-        area = self._extract_area(listing.title, listing.description) or "невідомо"
+        area = self._extract_area(listing.title, listing.description)
         amount, currency = self._split_price(listing.price)
-        phone = listing.phone or "не вказано"
-        location_label = city or cleaned_location or "невідомо"
-        if region and city:
+        location_label = cleaned_location
+        if city and region:
             location_label = f"{city}, {region}"
-        price_label = amount if not currency else f"{amount} {currency}"
-        lines = [
-            f"🏠 {clean_title}",
-            f"📐 Площа: {area} м²",
-            f"📍 Локація: {location_label}",
-            "",
-            "📝 Опис:",
-            cleaned_description or "немає",
-            "",
-            f"💰 Ціна: {price_label}",
-            f"📞 Телефон: {phone}",
-            "",
-            "🔗 Відкрити оголошення:",
-            listing.url,
-        ]
+        elif city:
+            location_label = city
+        emoji = self._detect_listing_emoji(listing.title, listing.description)
+        lines = [f"{emoji} {clean_title}"]
+        location_lines = []
+        if area:
+            location_lines.append(f"📐 Площа: {area} м²")
+        if location_label:
+            location_lines.append(f"📍 {location_label}")
+        if location_lines:
+            lines.append("")
+            lines.extend(location_lines)
+        if cleaned_description:
+            lines.append("")
+            lines.append("📝 Опис:")
+            lines.append(cleaned_description)
+        if amount and currency:
+            lines.append("")
+            lines.append(f"💰 Ціна: {amount} {currency}")
         return "\n".join(lines)
 
     def _build_reply_markup(self, listing: ListingData) -> dict[str, object]:
         return {
             "inline_keyboard": [
-                [{"text": "Відкрити оголошення", "url": listing.url}],
-                [{"text": "Показати телефон", "url": listing.url}],
+                [{"text": "🔍 Відкрити оголошення", "url": listing.url}],
+                [{"text": "📞 Показати телефон", "url": listing.url}],
             ]
         }
 
