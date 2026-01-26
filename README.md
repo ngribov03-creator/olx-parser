@@ -42,5 +42,9 @@ Example log:
 ## Debug one listing
 
 ```bash
-python debug_single.py
+python debug_single.py "URL_1"
+python debug_single.py "URL_2"
 ```
+
+Expected: `price` and `location` are not `None` for listings where JSON-LD contains
+offers.price and address/location fields.
