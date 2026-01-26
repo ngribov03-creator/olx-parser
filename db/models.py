@@ -46,8 +46,8 @@ class ListingData:
     phone: Optional[str]
     photos: List[str]
     location: Optional[str]
-    area: Optional[str] = None
     is_owner: bool
     created_at: datetime
     scraped_at: datetime
+    area: Optional[str] = None
     posted_to_telegram_at: Optional[datetime] = None
