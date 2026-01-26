@@ -212,11 +212,24 @@ def main() -> None:
             total_to_send = len(send_queue)
             urgent_sent = 0
             for index, listing_data in enumerate(send_queue, start=1):
+                missing_fields = []
+                if not listing_data.title:
+                    missing_fields.append("title")
+                if not listing_data.price:
+                    missing_fields.append("price")
                 if not listing_data.location:
-                    logger.info(
-                        "Skip listing: location not found (HTML/JSON) url=%s",
-                        listing_data.url,
-                    )
+                    missing_fields.append("location")
+                if not listing_data.description or not listing_data.description.strip():
+                    missing_fields.append("description")
+                if not listing_data.photos:
+                    missing_fields.append("photos")
+                if missing_fields:
+                    for field in missing_fields:
+                        logger.info(
+                            "Skip listing: missing %s url=%s",
+                            field,
+                            listing_data.url,
+                        )
                     continue
                 logger.info("Sending %s/%s: %s", index, total_to_send, listing_data.url)
                 try:

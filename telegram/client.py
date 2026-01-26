@@ -76,16 +76,18 @@ class TelegramClient:
     def _format_message(self, listing: ListingData) -> str:
         cleaned_description = self._clean_description(listing.description) or listing.description
         clean_title = self._clean_title(listing.title)
-        area = listing.area
         lines = [clean_title]
-        if area:
-            lines.append(f"Площа: {area}")
-        lines.append(f"Ціна: {listing.price}")
         if listing.location:
-            lines.append(f"Локація: {listing.location}")
+            lines.append(f"📍 {listing.location}")
+        lines.append(f"💰 {listing.price}")
+        if listing.area:
+            lines.append(f"📐 {listing.area} м²")
+        lines.append("")
+        lines.append("Опис:")
         if cleaned_description:
-            lines.append("")
             lines.append(cleaned_description)
+        lines.append("")
+        lines.append("🔗 Відкрити оголошення")
         return "\n".join(lines)
 
     def _build_reply_markup(self, listing: ListingData) -> dict[str, object]:
