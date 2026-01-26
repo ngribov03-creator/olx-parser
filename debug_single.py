@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 from sources.olx import ListingPreview, fetch_listing_data, parse_external_id
@@ -11,21 +10,6 @@ from utils.http import HttpClient
 LISTING_URL = (
     "https://www.olx.ua/d/uk/obyavlenie/prodazh-1-kimn-kvartiri-ID123456.html"
 )
-
-
-def _extract_area(title: Optional[str], description: Optional[str]) -> Optional[str]:
-    if not title or description is None:
-        return None
-    combined = f"{title} {description}"
-    match = re.search(
-        r"(\d+(?:[.,]\d+)?)\s*(?:m2|м2|м²|кв\.?\s*м|кв\s*м|кв\.м)",
-        combined,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    value = match.group(1).strip()
-    return value or None
 
 
 def _print_field(label: str, value: Optional[object]) -> None:
@@ -49,7 +33,7 @@ def main() -> None:
         _print_field("phone", None)
         return
 
-    area = _extract_area(listing.title, listing.description)
+    area = listing.area
     description_len = len(listing.description) if listing.description else None
 
     _print_field("title", listing.title or None)
