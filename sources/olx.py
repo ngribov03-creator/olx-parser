@@ -421,9 +421,13 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
     if not photos:
         missing_fields.append("photos")
 
+    if set(missing_fields) == {"title", "price", "location", "description", "photos"}:
+        LOGGER.info("Temporary fetch issue (empty HTML), skipping: %s", url)
+        return None
+
     if not title or not price:
         LOGGER.warning(
-            "Skipping listing with missing fields: %s missing=%s",
+            "Skip (invalid listing): %s missing=%s",
             url,
             ",".join(missing_fields),
         )
