@@ -110,7 +110,9 @@ def _get_first_offer(offers: object) -> Optional[dict]:
     return None
 
 
-def _extract_location_from_address(address: object, source_prefix: str) -> tuple[Optional[str], Optional[str]]:
+def _extract_location_from_address(
+    address: object, source_prefix: str
+) -> tuple[Optional[str], Optional[str]]:
     if isinstance(address, dict):
         parts: List[str] = []
         sources: List[str] = []
@@ -154,7 +156,31 @@ def _extract_location_from_address(address: object, source_prefix: str) -> tuple
     return None, None
 
 
-def _extract_location_from_location_field(
+def _extract_location_from_address_fields(
+    address: object, source_prefix: str
+) -> tuple[Optional[str], Optional[str]]:
+    if isinstance(address, dict):
+        for key in ("addressLocality", "addressRegion"):
+            value = address.get(key)
+            if isinstance(value, str):
+                normalized = _normalize_location(value)
+                if normalized:
+                    return normalized, f"{source_prefix}.{key}"
+        return None, None
+    if isinstance(address, list):
+        for index, item in enumerate(address):
+            nested, source = _extract_location_from_address_fields(item, f"{source_prefix}[{index}]")
+            if nested:
+                return nested, source
+        return None, None
+    if isinstance(address, str):
+        normalized = _normalize_location(address)
+        if normalized:
+            return normalized, source_prefix
+    return None, None
+
+
+def _extract_location_name_from_location_field(
     location_field: object, source_prefix: str
 ) -> tuple[Optional[str], Optional[str]]:
     if isinstance(location_field, dict):
@@ -163,15 +189,19 @@ def _extract_location_from_location_field(
             normalized = _normalize_location(name)
             if normalized:
                 return normalized, f"{source_prefix}.name"
-        address = location_field.get("address")
-        if address:
-            return _extract_location_from_address(address, f"{source_prefix}.address")
         return None, None
     if isinstance(location_field, list):
         for index, item in enumerate(location_field):
-            nested, source = _extract_location_from_location_field(item, f"{source_prefix}[{index}]")
+            nested, source = _extract_location_name_from_location_field(
+                item, f"{source_prefix}[{index}]"
+            )
             if nested:
                 return nested, source
+        return None, None
+    if isinstance(location_field, str):
+        normalized = _normalize_location(location_field)
+        if normalized:
+            return normalized, source_prefix
     return None, None
 
 
@@ -181,12 +211,21 @@ def _extract_location_from_json_ld_with_source(
     for entry in json_ld_entries:
         location_field = entry.get("location")
         if location_field:
-            location, source = _extract_location_from_location_field(location_field, "json_ld.location")
+            location, source = _extract_location_name_from_location_field(
+                location_field, "json_ld.location"
+            )
             if location:
                 return location, source, entry
         address = entry.get("address")
         if address:
-            location, source = _extract_location_from_address(address, "json_ld.address")
+            location, source = _extract_location_from_address_fields(address, "json_ld.address")
+            if location:
+                return location, source, entry
+        if isinstance(location_field, dict) and location_field.get("address"):
+            location, source = _extract_location_from_address_fields(
+                location_field["address"],
+                "json_ld.location.address",
+            )
             if location:
                 return location, source, entry
         offers = entry.get("offers")
@@ -224,11 +263,16 @@ def _extract_location_from_json_ld(json_ld_entries: Iterable[dict]) -> Optional[
     return location
 
 
-def extract_location(soup: BeautifulSoup, json_ld_entries: Iterable[dict]) -> Optional[str]:
-    location = _extract_location_from_json_ld(json_ld_entries)
+def extract_location(
+    soup: BeautifulSoup, json_ld_entries: Iterable[dict]
+) -> tuple[Optional[str], Optional[str]]:
+    location, source, _ = _extract_location_from_json_ld_with_source(json_ld_entries)
     if location:
-        return location
-    return _extract_location_from_html(soup)
+        return location, source
+    html_location = _extract_location_from_html(soup)
+    if html_location:
+        return html_location, "html.data-testid"
+    return None, None
 
 
 def _is_product_type(json_ld: dict) -> bool:
@@ -495,8 +539,10 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
             LOGGER.debug("Price missing for %s (json_ld_objects=%s)", url, len(json_ld_entries))
 
     description = extract_description(soup, json_ld)
-    location = extract_location(soup, json_ld_entries)
-    if not location:
+    location, location_source = extract_location(soup, json_ld_entries)
+    if location:
+        LOGGER.debug("Location extracted for %s from %s", url, location_source)
+    else:
         LOGGER.debug("Location missing for %s (json_ld_objects=%s)", url, len(json_ld_entries))
     area = extract_area(soup)
 
