@@ -92,6 +92,38 @@ class TelegramClient:
             return "🏠"
         return "📦"
 
+    def _extract_area(self, title: str, description: str) -> Optional[str]:
+        combined = f"{title} {description}"
+        match = re.search(
+            r"(\d+(?:[.,]\d+)?)\s*(?:m2|м2|м²|кв\.?\s*м|кв\s*м|кв\.м)",
+            combined,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        value = match.group(1).strip()
+        return value or None
+
+    def _split_location_parts(self, location: str) -> tuple[Optional[str], Optional[str]]:
+        if not location:
+            return None, None
+        parts = [part.strip() for part in location.split(",") if part.strip()]
+        if not parts:
+            return None, None
+        city = parts[0]
+        region = parts[-1] if len(parts) > 1 else None
+        return city or None, region or None
+
+    def _split_price(self, price: str) -> tuple[str, Optional[str]]:
+        normalized = re.sub(r"\s+", " ", price).strip()
+        match = re.search(r"[\d\s.,]+", normalized)
+        if not match:
+            return normalized, None
+        amount = match.group(0).strip()
+        currency = (normalized[: match.start()] + normalized[match.end() :]).strip()
+        currency = currency or None
+        return amount, currency
+
     def _clean_description(self, description: str) -> Optional[str]:
         if not description:
             return None
@@ -128,14 +160,30 @@ class TelegramClient:
 
     def _format_message(self, listing: ListingData) -> str:
         cleaned_description = self._clean_description(listing.description)
-        emoji = self._detect_listing_emoji(listing.title, listing.description)
         clean_title = self._clean_title(listing.title)
         cleaned_location = self._clean_location(listing.location or "")
-        lines = [f"{emoji} {clean_title}", f"💰 {listing.price}"]
-        if cleaned_location:
-            lines.append(f"📍 {cleaned_location}")
-        if cleaned_description:
-            lines.extend(["", "📝 Опис:", cleaned_description])
+        city, region = self._split_location_parts(cleaned_location or "")
+        area = self._extract_area(listing.title, listing.description) or "невідомо"
+        amount, currency = self._split_price(listing.price)
+        phone = listing.phone or "не вказано"
+        location_label = city or cleaned_location or "невідомо"
+        if region and city:
+            location_label = f"{city}, {region}"
+        price_label = amount if not currency else f"{amount} {currency}"
+        lines = [
+            f"🏠 {clean_title}",
+            f"📐 Площа: {area} м²",
+            f"📍 Локація: {location_label}",
+            "",
+            "📝 Опис:",
+            cleaned_description or "немає",
+            "",
+            f"💰 Ціна: {price_label}",
+            f"📞 Телефон: {phone}",
+            "",
+            "🔗 Відкрити оголошення:",
+            listing.url,
+        ]
         return "\n".join(lines)
 
     def _build_reply_markup(self, listing: ListingData) -> dict[str, object]:
