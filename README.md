@@ -44,3 +44,9 @@ Example log:
 ```bash
 python debug_single.py
 ```
+
+## DirectSell landing (Next.js)
+
+The `landing` directory contains a mobile-first marketing landing with webhook form delivery,
+pixel integrations, and a thank-you page. See `landing/README.md` for setup and deployment
+instructions.
