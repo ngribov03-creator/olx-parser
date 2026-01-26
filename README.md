@@ -38,3 +38,9 @@ Example log:
 2024-05-03 12:00:02 INFO sample_listings Fetching 3/3: https://www.olx.ua/d/uk/obyavlenie/ofis-uzhgorod-ID345678.html
 2024-05-03 12:00:03 INFO sample_listings Parsed listing title=Офісне приміщення price=250 грн/м² location=Ужгород, Центр description=Комерційне приміщення під офіс…
 ```
+
+## Debug one listing
+
+```bash
+python debug_single.py
+```
