@@ -104,14 +104,39 @@ def _get_first_offer(offers: object) -> Optional[dict]:
     return None
 
 
+def _extract_location_from_address(address: object) -> Optional[str]:
+    if isinstance(address, dict):
+        for key in ("addressLocality", "addressRegion", "addressCountry", "name"):
+            value = address.get(key)
+            if isinstance(value, str):
+                normalized = _normalize_location(value)
+                if normalized:
+                    return normalized
+            if isinstance(value, dict):
+                nested = value.get("name")
+                if isinstance(nested, str):
+                    normalized = _normalize_location(nested)
+                    if normalized:
+                        return normalized
+        return None
+    if isinstance(address, list):
+        for item in address:
+            if isinstance(item, (dict, str)):
+                nested = _extract_location_from_address(item)
+                if nested:
+                    return nested
+        return None
+    if isinstance(address, str):
+        return _normalize_location(address)
+    return None
+
+
 def _extract_location_from_json_ld(obj: dict) -> Optional[str]:
     address = obj.get("address")
-    if isinstance(address, dict):
-        locality = address.get("addressLocality")
-        if isinstance(locality, str):
-            normalized = _normalize_location(locality)
-            if normalized:
-                return normalized
+    if address:
+        normalized = _extract_location_from_address(address)
+        if normalized:
+            return normalized
     offers = _get_first_offer(obj.get("offers"))
     if offers:
         available = offers.get("availableAtOrFrom")
@@ -119,12 +144,10 @@ def _extract_location_from_json_ld(obj: dict) -> Optional[str]:
             available = next((item for item in available if isinstance(item, dict)), None)
         if isinstance(available, dict):
             offer_address = available.get("address")
-            if isinstance(offer_address, dict):
-                locality = offer_address.get("addressLocality")
-                if isinstance(locality, str):
-                    normalized = _normalize_location(locality)
-                    if normalized:
-                        return normalized
+            if offer_address:
+                normalized = _extract_location_from_address(offer_address)
+                if normalized:
+                    return normalized
     city = obj.get("city")
     if isinstance(city, dict):
         name = city.get("name")
@@ -168,7 +191,7 @@ def _is_product_type(json_ld: dict) -> bool:
 
 def _extract_price_from_json_ld(json_ld_entries: Iterable[dict]) -> Optional[str]:
     for entry in json_ld_entries:
-        if not _is_product_type(entry):
+        if not _is_product_type(entry) and "offers" not in entry:
             continue
         offer = _get_first_offer(entry.get("offers"))
         if not offer:
