@@ -33,8 +33,8 @@ def main() -> None:
         _print_field("price", None)
         _print_field("location", None)
         _print_field("area", None)
-        _print_field("description_len", None)
         _print_field("phone", None)
+        _print_field("description_len", None)
         return
 
     area = listing.area
@@ -44,8 +44,8 @@ def main() -> None:
     _print_field("price", listing.price or None)
     _print_field("location", listing.location or None)
     _print_field("area", area)
-    _print_field("description_len", description_len)
     _print_field("phone", listing.phone or None)
+    _print_field("description_len", description_len)
 
 
 if __name__ == "__main__":
