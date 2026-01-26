@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from sources.olx import ListingPreview, fetch_listing_data, parse_external_id
 from utils.http import HttpClient
 
-LISTING_URL = (
-    "https://www.olx.ua/d/uk/obyavlenie/prodazh-1-kimn-kvartiri-ID123456.html"
+LISTING_URL = os.environ.get(
+    "LISTING_URL",
+    "https://www.olx.ua/d/uk/obyavlenie/prodazh-1-kimn-kvartiri-ID123456.html",
 )
 
 
@@ -26,7 +28,7 @@ def main() -> None:
 
     if not listing:
         _print_field("title", None)
-        _print_field("price", None)
+        _print_field("price_text", None)
         _print_field("location", None)
         _print_field("area", None)
         _print_field("description_len", None)
@@ -37,7 +39,7 @@ def main() -> None:
     description_len = len(listing.description) if listing.description else None
 
     _print_field("title", listing.title or None)
-    _print_field("price", listing.price or None)
+    _print_field("price_text", listing.price or None)
     _print_field("location", listing.location or None)
     _print_field("area", area)
     _print_field("description_len", description_len)

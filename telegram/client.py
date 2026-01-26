@@ -45,6 +45,8 @@ class TelegramClient:
         seen = set()
         for line in raw_lines:
             if not line:
+                if filtered_lines and filtered_lines[-1] != "":
+                    filtered_lines.append("")
                 continue
             lowered = line.lower()
             if "olx id" in lowered:
@@ -60,11 +62,12 @@ class TelegramClient:
                 continue
             seen.add(normalized_line)
             filtered_lines.append(line.strip())
-        cleaned = " ".join(filtered_lines)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = "\n".join(filtered_lines).strip()
+        cleaned = re.sub(r"[ \t]+", " ", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         if not cleaned:
             return None
-        max_length = 500
+        max_length = 800
         if len(cleaned) > max_length:
             trimmed = cleaned[: max_length - 1].rstrip()
             cleaned = f"{trimmed}…"
@@ -77,17 +80,21 @@ class TelegramClient:
         lines = [clean_title]
         if area:
             lines.append(f"Площа: {area}")
-        if cleaned_description:
-            lines.append(f"Опис: {cleaned_description}")
         lines.append(f"Ціна: {listing.price}")
         if listing.location:
             lines.append(f"Локація: {listing.location}")
+        if cleaned_description:
+            lines.append("")
+            lines.append(cleaned_description)
         return "\n".join(lines)
 
     def _build_reply_markup(self, listing: ListingData) -> dict[str, object]:
+        keyboard = [[{"text": "Відкрити оголошення", "url": listing.url}]]
+        if listing.phone:
+            keyboard.append([{"text": "Показати телефон", "url": f"tel:{listing.phone}"}])
         return {
             "inline_keyboard": [
-                [{"text": "Відкрити оголошення", "url": listing.url}],
+                *keyboard,
             ]
         }
 
@@ -110,6 +117,8 @@ class TelegramClient:
             media = []
             for index, photo in enumerate(photos[:10]):
                 item = {"type": "photo", "media": photo}
+                if index == 0:
+                    item["caption"] = message
                 media.append(item)
             payload = {"chat_id": self._config.chat_id, "media": media}
         else:
@@ -148,7 +157,7 @@ class TelegramClient:
         if api_method == "sendMediaGroup":
             followup_payload = {
                 "chat_id": self._config.chat_id,
-                "text": message,
+                "text": "\u200b",
                 "reply_markup": reply_markup,
             }
             try:
