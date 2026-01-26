@@ -2,28 +2,34 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from sources.olx import ListingPreview, fetch_listing_data, parse_external_id
-from telegram.client import TelegramClient, TelegramConfig
 from utils.http import HttpClient
 
-LISTING_URL = "https://www.olx.ua/d/uk/"  # Replace with a specific OLX listing URL.
+LISTING_URL = (
+    "https://www.olx.ua/d/uk/obyavlenie/prodazh-1-kimn-kvartiri-ID123456.html"
+)
 
 
-def _format_price(raw_price: Optional[str], client: TelegramClient) -> Optional[str]:
-    if not raw_price:
-        return None
-    amount, currency = client._split_price(raw_price)
-    if amount and currency:
-        return f"{amount} {currency}"
-    return raw_price
-
-
-def _extract_area(title: Optional[str], description: Optional[str], client: TelegramClient) -> Optional[str]:
+def _extract_area(title: Optional[str], description: Optional[str]) -> Optional[str]:
     if not title or description is None:
         return None
-    return client._extract_area(title, description)
+    combined = f"{title} {description}"
+    match = re.search(
+        r"(\d+(?:[.,]\d+)?)\s*(?:m2|м2|м²|кв\.?\s*м|кв\s*м|кв\.м)",
+        combined,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = match.group(1).strip()
+    return value or None
+
+
+def _print_field(label: str, value: Optional[object]) -> None:
+    print(f"{label}: {value if value not in ('', None) else None}")
 
 
 def main() -> None:
@@ -35,25 +41,23 @@ def main() -> None:
     listing = fetch_listing_data(preview, http_client)
 
     if not listing:
-        print("title: None")
-        print("price: None")
-        print("location: None")
-        print("area: None")
-        print("description_len: None")
-        print("phone: None")
+        _print_field("title", None)
+        _print_field("price", None)
+        _print_field("location", None)
+        _print_field("area", None)
+        _print_field("description_len", None)
+        _print_field("phone", None)
         return
 
-    helper = TelegramClient(TelegramConfig(token="", chat_id=""))
-    price = _format_price(listing.price, helper)
-    area = _extract_area(listing.title, listing.description, helper)
+    area = _extract_area(listing.title, listing.description)
     description_len = len(listing.description) if listing.description else None
 
-    print(f"title: {listing.title or None}")
-    print(f"price: {price}")
-    print(f"location: {listing.location or None}")
-    print(f"area: {area}")
-    print(f"description_len: {description_len}")
-    print(f"phone: {listing.phone}")
+    _print_field("title", listing.title or None)
+    _print_field("price", listing.price or None)
+    _print_field("location", listing.location or None)
+    _print_field("area", area)
+    _print_field("description_len", description_len)
+    _print_field("phone", listing.phone or None)
 
 
 if __name__ == "__main__":
