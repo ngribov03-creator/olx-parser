@@ -569,14 +569,26 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
     return None, "none"
 
 
-async def get_phone(page, offer_id):
-    phone_button = page.locator('[data-testid*="phone"]').first
+async def get_phone(page):
+    seen_urls: list[str] = []
 
-    async with page.expect_response(
-        lambda r: f"/api/v1/offers/{offer_id}/limited-phones" in r.url and r.status == 200,
-        timeout=15000,
-    ) as resp_info:
-        await phone_button.click()
+    def _track_response(response) -> None:
+        seen_urls.append(response.url)
+
+    page.on("response", _track_response)
+    try:
+        async with page.expect_response(
+            lambda r: "/limited-phones" in r.url and r.status == 200,
+            timeout=30000,
+        ) as resp_info:
+            await page.locator('[data-testid*="phone"]').first.click()
+    except PlaywrightTimeoutError:
+        print("PHONE RESPONSE TIMEOUT. URLs seen after click:")
+        for url in seen_urls:
+            print(url)
+        raise
+    finally:
+        page.off("response", _track_response)
 
     resp = await resp_info.value
     data = await resp.json()
@@ -716,7 +728,7 @@ async def _run() -> None:
         print("offer_id:", offer_id)
         phone_source = "none"
         phone = (
-            await get_phone(page, offer_id)
+            await get_phone(page)
             if (not args.no_phone and offer_id is not None)
             else None
         )
