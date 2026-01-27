@@ -567,9 +567,9 @@ def _find_phone_in_json(data: object) -> Optional[str]:
 
 async def _find_phone_button(page):
     selectors = [
+        "button:has-text(\"Показати телефон\")",
+        "button:has-text(\"Показать телефон\")",
         "[data-testid*='phone']",
-        "[aria-label*='phone']",
-        "button:has(svg)",
         "a[href*='phone']",
     ]
     for selector in selectors:
@@ -625,30 +625,65 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
         print("phone button not found")
         return None
 
+    limited_response = None
+    phone_view_response = None
     try:
-        async with page.expect_response(
-            lambda r: "/limited-phones" in r.url or "/phone-view" in r.url
-        ) as response_info:
-            await button_locator.click(timeout=2000)
-        response = await response_info.value
+        limited_waiter = page.expect_response(
+            lambda r: "/limited-phones" in r.url,
+            timeout=6000,
+        )
+        phone_view_waiter = page.expect_response(
+            lambda r: "/phone-view" in r.url,
+            timeout=6000,
+        )
+        print("clicking phone button...")
+        await button_locator.click(timeout=2000)
+        print("clicked")
+        try:
+            limited_response = await limited_waiter.value
+        except PlaywrightTimeoutError:
+            limited_response = None
+        try:
+            phone_view_response = await phone_view_waiter.value
+        except PlaywrightTimeoutError:
+            phone_view_response = None
     except Exception:
+        return None
+
+    for response in (limited_response, phone_view_response):
+        if response is None:
+            continue
+        endpoint = _match_phone_endpoint(response.url) or "unknown"
+        try:
+            response_text = await response.text()
+        except Exception as exc:
+            response_text = f"<failed to read text: {exc}>"
+        print(f"phone endpoint: {endpoint}")
+        print(f"phone response url: {response.url}")
+        print(f"phone response status: {response.status}")
+        print(f"phone response text (200): {response_text[:200]}")
+
+    response = limited_response or phone_view_response
+    if response is None:
         return None
 
     endpoint = _match_phone_endpoint(response.url) or "unknown"
     try:
         payload = await response.json()
-    except Exception as exc:
-        print(f"phone endpoint: {endpoint}")
-        print(f"phone response url: {response.url}")
-        print(f"phone json: <failed to read json: {exc}>")
+    except Exception:
         return None
 
-    print(f"phone endpoint: {endpoint}")
-    print(f"phone response url: {response.url}")
-    print(f"phone json: {payload}")
     phone = _parse_phone_payload(payload)
     if phone:
         return phone
+
+    if limited_response and phone_view_response:
+        fallback_response = phone_view_response if response is limited_response else limited_response
+        try:
+            fallback_payload = await fallback_response.json()
+        except Exception:
+            return None
+        return _parse_phone_payload(fallback_payload)
 
     fallback_endpoint = "limited-phones" if endpoint == "phone-view" else "phone-view"
     try:
@@ -713,6 +748,18 @@ async def _run() -> None:
         page.on("request", _handle_request)
         page.on("response", _handle_response)
         await page.goto(args.url, wait_until="domcontentloaded")
+        phone_text_selectors = [
+            "button:has-text(\"Показати телефон\")",
+            "button:has-text(\"Показать телефон\")",
+        ]
+        phone_text_count = 0
+        for selector in phone_text_selectors:
+            phone_text_count += await page.locator(selector).count()
+        phone_testid_count = await page.locator("[data-testid*='phone']").count()
+        phone_href_count = await page.locator("a[href*='phone']").count()
+        print(f"phone buttons by text: {phone_text_count}")
+        print(f"phone buttons by data-testid: {phone_testid_count}")
+        print(f"phone buttons by href: {phone_href_count}")
         await page.wait_for_timeout(1500)
         try:
             await page.wait_for_load_state("networkidle", timeout=5000)
