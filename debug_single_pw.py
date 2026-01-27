@@ -589,10 +589,6 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     if button_locator is None:
         print("phone button not found")
         return None
-    button_handle = await button_locator.element_handle()
-    if button_handle is None:
-        return None
-    parent_handle = await button_handle.evaluate_handle("el => el.parentElement")
 
     try:
         print("clicking phone button...")
@@ -603,12 +599,18 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     except Exception:
         return None
 
-    await asyncio.sleep(1.5)
-    parent_text = await parent_handle.evaluate("el => (el ? el.innerText : '')")
-    phone_match = _extract_phone_from_parent_text(parent_text or "")
-    print("parent_text:", parent_text)
-    print("phone_match:", phone_match)
-    return phone_match
+    await page.wait_for_timeout(1500)
+    try:
+        text = await page.inner_text("body")
+    except PlaywrightTimeoutError:
+        text = ""
+    print("page_text_sample:", text[:300])
+    cleaned_text = re.sub(r"[\s-]+", "", text)
+    match = re.search(r"(\+?380\d{9}|0\d{9})", cleaned_text)
+    print("phone_match:", match)
+    if match:
+        return match.group(0)
+    return None
 
 
 def _parse_args() -> argparse.Namespace:
