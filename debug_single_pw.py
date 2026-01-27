@@ -432,6 +432,15 @@ def _extract_dom_photos(soup: BeautifulSoup) -> list[str]:
 PHONE_REGEX = re.compile(r"(\+?380\d{9}|0\d{9})")
 PHONE_REGEX_SPACES = re.compile(r"(\+?38\s?0?\d{2}\s?\d{3}\s?\d{2}\s?\d{2})")
 PHONE_REGEX_COMPACT = re.compile(r"(\+?380\d{9}|0\d{9})")
+PHONE_RESPONSE_HINTS = (
+    "/phone",
+    "/phones",
+    "/limited-phones",
+    "reveal",
+    "contact",
+    "graphql",
+    "apigateway/graphql",
+)
 
 
 def _find_phone_in_text(text: str) -> Optional[str]:
@@ -465,6 +474,54 @@ def _print_network_urls(payloads: list[dict[str, object]]) -> None:
     print("network_json_urls:")
     for url in urls:
         print(f"  - {url}")
+
+
+def _is_phone_response(response) -> bool:
+    request = response.request
+    if request.method not in {"GET", "POST"}:
+        return False
+    url = response.url.lower()
+    return any(hint in url for hint in PHONE_RESPONSE_HINTS)
+
+
+def _extract_phone_from_payload(payload: object) -> Optional[str]:
+    candidates: list[str] = []
+
+    def _collect(value: object) -> None:
+        if isinstance(value, str):
+            phone = _find_phone_in_text(value)
+            if phone:
+                candidates.append(phone)
+            return
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                lowered = str(key).lower()
+                if lowered in {"phone", "phones", "contact", "reveal-payload", "revealpayload"}:
+                    _collect(nested)
+                elif lowered == "data":
+                    _collect(nested)
+                else:
+                    _collect(nested)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _collect(item)
+
+    _collect(payload)
+    return candidates[0] if candidates else None
+
+
+async def _detect_phone_blocked(page) -> bool:
+    block_texts = ("Увійти", "Вхід", "Login", "Підтверд", "Captcha")
+    body_text = ""
+    try:
+        body_text = await page.locator("body").inner_text(timeout=2000)
+    except PlaywrightTimeoutError:
+        body_text = ""
+    if any(text in body_text for text in block_texts):
+        return True
+    captcha_iframe = page.locator("iframe[src*='captcha'], iframe[title*='captcha']")
+    return await captcha_iframe.count() > 0
 
 
 def _iter_json_items(data: object) -> Iterable[tuple[Optional[str], object]]:
@@ -570,39 +627,85 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
 
 
 async def get_phone(page):
-    seen_urls: list[str] = []
+    selectors = [
+        '[data-testid*="phone"]',
+        '[data-testid*="show-phone"]',
+        'button:has-text("Показ")',
+    ]
+    phone_buttons = page.locator(", ".join(selectors))
+    total_buttons = await phone_buttons.count()
+    print(f"phone button candidates: {total_buttons}")
 
-    def _track_response(response) -> None:
-        seen_urls.append(response.url)
+    clickable_button = None
+    for index in range(total_buttons):
+        button = phone_buttons.nth(index)
+        is_visible = await button.is_visible()
+        is_enabled = await button.is_enabled()
+        try:
+            inner_text = await button.inner_text()
+        except PlaywrightTimeoutError:
+            inner_text = ""
+        data_testid = await button.get_attribute("data-testid")
+        print(
+            "phone button candidate:",
+            {
+                "index": index,
+                "visible": is_visible,
+                "enabled": is_enabled,
+                "text": inner_text.strip(),
+                "data-testid": data_testid,
+            },
+        )
+        if clickable_button is None and is_visible and is_enabled:
+            clickable_button = button
 
-    page.on("response", _track_response)
+    if clickable_button is None:
+        print("PHONE BUTTON NOT CLICKABLE: no visible+enabled candidate found")
+        return None
+
+    await clickable_button.scroll_into_view_if_needed()
+    await page.wait_for_timeout(400)
+
     try:
-        async with page.expect_response(
-            lambda r: "/limited-phones" in r.url and r.status == 200,
-            timeout=30000,
-        ) as resp_info:
-            await page.locator('[data-testid*="phone"]').first.click()
+        async with page.expect_response(_is_phone_response, timeout=30000) as resp_info:
+            await clickable_button.click()
     except PlaywrightTimeoutError:
-        print("PHONE RESPONSE TIMEOUT. URLs seen after click:")
-        for url in seen_urls:
-            print(url)
-        raise
-    finally:
-        page.off("response", _track_response)
+        print("PHONE RESPONSE TIMEOUT: no matching request observed")
+        if await _detect_phone_blocked(page):
+            print("PHONE BLOCKED BY UI")
+        return None
 
     resp = await resp_info.value
-    data = await resp.json()
-
-    phones = data.get("data", {}).get("phones", [])
-    phone = phones[0] if phones else None
-
-    if phone:
-        phone = phone.replace(" ", "")
-
+    print("PHONE RESPONSE STATUS:", resp.status)
     print("PHONE RESPONSE URL:", resp.url)
-    print("PHONE JSON:", data)
-    print("PHONE:", phone)
+    if "graphql" in resp.url.lower():
+        print("PHONE RESPONSE GRAPHQL")
 
+    payload: Optional[object]
+    payload = None
+    try:
+        payload = await resp.json()
+        print("PHONE JSON:", json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        payload_text = await resp.text()
+        print("PHONE TEXT:", payload_text[:300])
+
+    phone = None
+    if payload is not None:
+        phone = _extract_phone_from_payload(payload)
+        if phone:
+            phone = phone.replace(" ", "").replace("-", "")
+        else:
+            print("PHONE NOT FOUND IN RESPONSE PAYLOAD")
+
+    if not phone:
+        try:
+            body_text = await page.locator("body").inner_text(timeout=2000)
+        except PlaywrightTimeoutError:
+            body_text = ""
+        phone = _find_phone_in_text(body_text)
+
+    print("PHONE:", phone)
     return phone
 
 
@@ -617,7 +720,7 @@ def _parse_args() -> argparse.Namespace:
 async def _run() -> None:
     args = _parse_args()
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=not args.headed)
+        browser = await playwright.chromium.launch(headless=False, slow_mo=200)
         context = await browser.new_context()
         page = await context.new_page()
         network_json: list[dict[str, object]] = []
