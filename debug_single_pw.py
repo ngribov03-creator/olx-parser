@@ -587,47 +587,23 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     except Exception:
         return None
 
-    await page.wait_for_timeout(1500)
-
-    tel_locator = page.locator("a[href^='tel:']")
-    if await tel_locator.count() > 0:
-        href = await tel_locator.first.get_attribute("href")
-        if href:
-            phone = href.replace("tel:", "").strip()
-            if phone:
-                return phone
-
-    async def _find_phone_in_locators(locators: list) -> Optional[str]:
-        for locator in locators:
-            try:
-                count = await locator.count()
-            except Exception:
-                continue
-            for i in range(min(count, 5)):
-                try:
-                    text = await locator.nth(i).inner_text(timeout=1000)
-                except Exception:
-                    continue
-                phone = _match_phone_with_logging(text)
-                if phone:
-                    return phone
+    try:
+        tel_element = await page.wait_for_selector('a[href^="tel:"], a[href*="tel"]', timeout=5000)
+    except PlaywrightTimeoutError:
         return None
 
-    container = button_locator.locator("xpath=..")
-    sibling = button_locator.locator("xpath=following-sibling::*[1]")
-    candidates = [
-        container,
-        container.locator("span"),
-        container.locator("a"),
-        container.locator("button"),
-        sibling,
-        sibling.locator("span"),
-        sibling.locator("a"),
-    ]
-    phone = await _find_phone_in_locators(candidates)
-    if phone:
-        return phone
-    return None
+    element_text = await tel_element.get_attribute("href")
+    phone_match: Optional[str] = None
+    if element_text and element_text.startswith("tel:"):
+        phone_match = element_text.replace("tel:", "", 1).strip() or None
+    else:
+        if element_text is None:
+            element_text = await tel_element.inner_text()
+        phone_match = _find_phone_in_text(element_text or "")
+
+    print("tel_element_text:", element_text)
+    print("phone_match:", phone_match)
+    return phone_match
 
 
 def _parse_args() -> argparse.Namespace:
