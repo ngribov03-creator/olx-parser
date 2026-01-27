@@ -684,7 +684,11 @@ async def get_phone(page):
     phone_error = None
     matched_response = None
 
+    capture_active = True
+
     async def _capture_response(response) -> None:
+        if not capture_active:
+            return
         request = response.request
         if request.resource_type not in {"xhr", "fetch"}:
             return
@@ -714,7 +718,7 @@ async def get_phone(page):
                     continue
         await page.wait_for_timeout(2500)
     finally:
-        page.off("response", _capture_response)
+        capture_active = False
 
     if matched_response is None:
         print("PHONE RESPONSE TIMEOUT: no matching request observed")
