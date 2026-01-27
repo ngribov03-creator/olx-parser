@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import re
+from pathlib import Path
 from typing import Iterable, Optional
 
 from bs4 import BeautifulSoup
@@ -408,6 +409,92 @@ def _find_phone_in_text(text: str) -> Optional[str]:
     return _normalize_space(match.group(0))
 
 
+def _write_network_payloads(payloads: list[dict[str, object]]) -> None:
+    output_path = Path("/tmp/olx_network.json")
+    existing: list[dict[str, object]] = []
+    if output_path.exists():
+        try:
+            existing_data = json.loads(output_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing_data = []
+        if isinstance(existing_data, list):
+            existing = existing_data
+    existing.extend(payloads)
+    output_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _print_network_urls(payloads: list[dict[str, object]]) -> None:
+    urls = [entry.get("url") for entry in payloads if isinstance(entry.get("url"), str)]
+    print("network_json_urls:")
+    for url in urls:
+        print(f"  - {url}")
+
+
+def _iter_json_items(data: object) -> Iterable[tuple[Optional[str], object]]:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            yield key, value
+            yield from _iter_json_items(value)
+    elif isinstance(data, list):
+        for item in data:
+            yield None, item
+            yield from _iter_json_items(item)
+
+
+def _find_first_key_match(data: object, keys: set[str]) -> Optional[tuple[str, object]]:
+    for key, value in _iter_json_items(data):
+        if key is None:
+            continue
+        if key.lower() in keys:
+            return key, value
+    return None
+
+
+def _print_network_matches(payloads: list[dict[str, object]]) -> None:
+    location_keys = {"city", "location", "address", "region"}
+    area_keys = {"area", "surface", "m2", "parameters"}
+    location_match: Optional[tuple[str, object, str]] = None
+    area_match: Optional[tuple[str, object, str]] = None
+
+    for entry in payloads:
+        url = entry.get("url")
+        data = entry.get("json")
+        if not isinstance(url, str):
+            continue
+        if location_match is None:
+            match = _find_first_key_match(data, location_keys)
+            if match:
+                key, value = match
+                location_match = (key, value, url)
+        if area_match is None:
+            match = _find_first_key_match(data, area_keys)
+            if match:
+                key, value = match
+                area_match = (key, value, url)
+        if location_match and area_match:
+            break
+
+    if location_match:
+        key, value, url = location_match
+        print(f"location_raw: {value}")
+        print(f"location_source_key: {key}")
+        print(f"location_source_url: {url}")
+    else:
+        print("location_raw: None")
+        print("location_source_key: None")
+        print("location_source_url: None")
+
+    if area_match:
+        key, value, url = area_match
+        print(f"area_raw: {value}")
+        print(f"area_source_key: {key}")
+        print(f"area_source_url: {url}")
+    else:
+        print("area_raw: None")
+        print("area_source_key: None")
+        print("area_source_url: None")
+
+
 async def _extract_phone(page) -> tuple[Optional[str], str]:
     button_found = False
     for text in PHONE_BUTTON_TEXTS:
@@ -459,12 +546,29 @@ async def _run() -> None:
         browser = await playwright.chromium.launch(headless=not args.headed)
         context = await browser.new_context()
         page = await context.new_page()
+        network_json: list[dict[str, object]] = []
+
+        async def _handle_response(response) -> None:
+            request = response.request
+            if request.resource_type not in {"xhr", "fetch"}:
+                return
+            try:
+                payload = await response.json()
+            except Exception:
+                return
+            network_json.append({"url": response.url, "json": payload})
+
+        page.on("response", _handle_response)
         await page.goto(args.url, wait_until="domcontentloaded")
         await page.wait_for_timeout(1500)
         try:
             await page.wait_for_load_state("networkidle", timeout=5000)
         except PlaywrightTimeoutError:
             pass
+
+        _write_network_payloads(network_json)
+        _print_network_urls(network_json)
+        _print_network_matches(network_json)
 
         html = await page.content()
         soup = BeautifulSoup(html, "html.parser")
