@@ -12,6 +12,8 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from db.repository import Repository
+from db.sqlite import init_db as init_sqlite_db
+from db.sqlite import upsert_offer
 from sources.olx import fetch_listing_data, fetch_listings
 from telegram.client import TelegramClient, TelegramConfig
 from utils.http import HttpClient
@@ -140,6 +142,7 @@ def main() -> None:
     http_client = HttpClient()
     repository = Repository(build_database_url(config.db_path))
     repository.init_db()
+    init_sqlite_db(config.db_path)
     telegram_client = None
     if config.telegram_enabled:
         telegram_client = TelegramClient(
@@ -166,6 +169,7 @@ def main() -> None:
                 continue
             if not listing_data:
                 continue
+            upsert_offer(listing_data, config.db_path)
             match = None
             if config.agent_keywords_filter:
                 match = find_agent_keyword_match(

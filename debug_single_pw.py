@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from datetime import datetime
 import json
+import os
 import re
 from typing import Iterable, Optional
 
 from bs4 import BeautifulSoup
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
+
+from db.models import ListingData
+from db.sqlite import init_db as init_sqlite_db
+from db.sqlite import upsert_offer
 
 INVALID_LOCATION_MARKERS = {
     "obyavlenie",
@@ -929,11 +935,32 @@ async def _run() -> None:
             phone_source = "api"
         sources["phone"] = phone_source
 
+        final_url = page.url
         await context.close()
         await browser.close()
 
     description_len = len(description) if description else None
     photos_clean = [photo for photo in photos if photo][:10]
+
+    db_path = os.getenv("DB_PATH", "data.db")
+    if title and price:
+        listing = ListingData(
+            source="olx",
+            external_id=alnum_id or (str(offer_id) if offer_id else args.url),
+            url=final_url,
+            title=title,
+            price=str(price),
+            description=description or "",
+            phone=phone,
+            photos=photos_clean,
+            location=location,
+            area=area,
+            is_owner=False,
+            created_at=datetime.utcnow(),
+            scraped_at=datetime.utcnow(),
+        )
+        init_sqlite_db(db_path)
+        upsert_offer(listing, db_path)
 
     _print_field("title", title)
     _print_field("price", price)
