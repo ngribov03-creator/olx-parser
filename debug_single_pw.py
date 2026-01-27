@@ -639,14 +639,10 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
     return None, "none"
 
 
-async def get_phone(page):
-    selectors = [
-        '[data-testid*="show-phone"]',
-        '[data-testid*="ad-contact-phone"]',
-        '[data-testid*="phone"]',
-        'button:has-text("Показ")',
-    ]
-    phone_buttons = page.locator(", ".join(selectors))
+async def get_phone(page, offer_id: Optional[int]):
+    phone_buttons = page.locator(
+        '[data-testid="show-phone"], [data-testid="ad-contact-phone"]',
+    )
     total_buttons = await phone_buttons.count()
     print(f"phone button candidates: {total_buttons}")
 
@@ -655,10 +651,6 @@ async def get_phone(page):
         button = phone_buttons.nth(index)
         is_visible = await button.is_visible()
         is_enabled = await button.is_enabled()
-        try:
-            inner_text = await button.inner_text()
-        except PlaywrightTimeoutError:
-            inner_text = ""
         data_testid = await button.get_attribute("data-testid")
         print(
             "phone button candidate:",
@@ -666,133 +658,67 @@ async def get_phone(page):
                 "index": index,
                 "visible": is_visible,
                 "enabled": is_enabled,
-                "text": inner_text.strip(),
                 "data-testid": data_testid,
             },
         )
         if clickable_button is None and is_visible and is_enabled:
             clickable_button = button
 
+    phone_debug: dict[str, object] = {
+        "offer_id": offer_id,
+        "matched_url": None,
+        "response_status": None,
+        "response_snippet": None,
+    }
+
     if clickable_button is None:
         print("PHONE BUTTON NOT CLICKABLE: no visible+enabled candidate found")
-        return None, "no clickable phone button", {"last_xhr": []}
+        return None, "no clickable phone button", phone_debug
 
     await clickable_button.scroll_into_view_if_needed()
-    await page.wait_for_timeout(400)
+    await page.wait_for_timeout(300)
 
-    phone_debug: dict[str, object] = {"last_xhr": []}
-    phone_error = None
-    matched_response = None
+    def _is_limited_phones_response(response) -> bool:
+        url = response.url
+        return "/api/v1/offers/" in url and "/limited-phones" in url and response.status == 200
 
-    capture_active = True
-
-    async def _capture_response(response) -> None:
-        if not capture_active:
-            return
-        request = response.request
-        if request.resource_type not in {"xhr", "fetch"}:
-            return
-        phone_debug["last_xhr"].append(
-            {
-                "status": response.status,
-                "method": request.method,
-                "url": response.url,
-            },
-        )
-
-    page.on("response", _capture_response)
     try:
-        for attempt in range(2):
-            try:
-                async with page.expect_response(
-                    _is_phone_response,
-                    timeout=12000,
-                ) as resp_info:
-                    await clickable_button.click()
-                matched_response = await resp_info.value
-                break
-            except PlaywrightTimeoutError:
-                phone_error = "no matching request"
-                if attempt == 0:
-                    await page.wait_for_timeout(500)
-                    continue
-        await page.wait_for_timeout(2500)
-    finally:
-        capture_active = False
+        async with page.expect_response(_is_limited_phones_response, timeout=9000) as resp_info:
+            await clickable_button.click()
+        resp = await resp_info.value
+    except PlaywrightTimeoutError:
+        print("PHONE RESPONSE TIMEOUT: limited-phones not received")
+        return None, "limited-phones timeout", phone_debug
 
-    if matched_response is None:
-        print("PHONE RESPONSE TIMEOUT: no matching request observed")
-        if await _detect_phone_blocked(page):
-            print("PHONE BLOCKED BY UI")
-            phone_error = "blocked"
-        return None, phone_error or "timeout", phone_debug
-
-    resp = matched_response
     phone_debug["matched_url"] = resp.url
-    phone_debug["status"] = resp.status
-    if "graphql" in resp.url.lower():
-        phone_debug["graphql"] = True
-        phone_debug["graphql_request_payload"] = resp.request.post_data
+    phone_debug["response_status"] = resp.status
 
     payload: Optional[object]
     payload = None
     snippet = None
     try:
         payload = await resp.json()
-        payload_text = json.dumps(payload, ensure_ascii=False)
-        snippet = payload_text[:800]
-        print("PHONE JSON:", payload_text)
+        snippet = json.dumps(payload, ensure_ascii=False)[:300]
     except Exception:
         payload_text = await resp.text()
-        snippet = payload_text[:800]
-        print("PHONE TEXT:", payload_text[:300])
-        phone_error = "parse error"
+        snippet = payload_text[:300]
 
-    if snippet:
-        phone_debug["snippet"] = snippet
-
-    if resp.status == 403:
-        phone_error = "403"
-    elif resp.status == 429:
-        phone_error = "429"
+    phone_debug["response_snippet"] = snippet
 
     phone = None
-    if payload is not None:
-        phone = _extract_phone_from_payload(payload)
-        if phone:
-            phone_debug["phone_original"] = phone
-            phone = _normalize_phone(phone)
-        else:
-            print("PHONE NOT FOUND IN RESPONSE PAYLOAD")
-            phone_error = phone_error or "no phone in response"
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            phones = data.get("phones")
+            if isinstance(phones, list) and phones:
+                if isinstance(phones[0], str):
+                    phone = _normalize_space(phones[0])
 
     if not phone:
-        tel_locator = page.locator("a[href^='tel:']").first
-        try:
-            await tel_locator.wait_for(timeout=2000)
-            href = await tel_locator.get_attribute("href")
-        except PlaywrightTimeoutError:
-            href = None
-        if href:
-            raw_phone = href.replace("tel:", "").strip()
-            if raw_phone:
-                phone_debug["phone_original"] = raw_phone
-                phone = _normalize_phone(raw_phone)
-
-    if not phone:
-        try:
-            body_text = await page.locator("body").inner_text(timeout=2000)
-        except PlaywrightTimeoutError:
-            body_text = ""
-        text_phone = _find_phone_in_text(body_text)
-        if text_phone:
-            phone_debug["phone_original"] = text_phone
-            phone = _normalize_phone(text_phone)
-        else:
-            phone_error = phone_error or "no phone in response"
+        return None, "no phones in response", phone_debug
 
     print("PHONE:", phone)
-    return phone, phone_error, phone_debug
+    return phone, None, phone_debug
 
 
 def _parse_args() -> argparse.Namespace:
@@ -920,7 +846,7 @@ async def _run() -> None:
         phone_error = None
         phone_debug = None
         if not args.no_phone and offer_id is not None:
-            phone, phone_error, phone_debug = await get_phone(page)
+            phone, phone_error, phone_debug = await get_phone(page, offer_id)
         if phone:
             phone_source = "api"
         sources["phone"] = phone_source
