@@ -828,12 +828,69 @@ async def _run() -> None:
             if location:
                 sources["location"] = "jsonld_location"
 
+        location_debug = None
+        location_error = None
+        if not location:
+            city_text = None
+            region_text = None
+            city_locator = page.locator('p[data-nx-name="P2"]')
+            if await city_locator.count() > 0:
+                city_text = _normalize_space(await city_locator.first.inner_text())
+            if city_text:
+                region_locator = city_locator.first.locator(
+                    "xpath=following-sibling::p[@data-nx-name='P3']",
+                )
+                if await region_locator.count() > 0:
+                    region_text = _normalize_space(await region_locator.first.inner_text())
+                if not region_text:
+                    region_candidates = page.locator('p[data-nx-name="P3"]')
+                    if await region_candidates.count() > 0:
+                        region_text = _normalize_space(await region_candidates.first.inner_text())
+                location_parts = [city_text]
+                if region_text and region_text != city_text:
+                    location_parts.append(region_text)
+                location = ", ".join(location_parts)
+                location_debug = f"city: {city_text}; region: {region_text}"
+                sources["location"] = "dom"
+            else:
+                location_error = "city not found"
+
         area = None
         sources["area"] = "none"
         if not area and description:
             area = extract_area_from_text(description)
             if area is not None:
                 sources["area"] = "desc_regex"
+        area_debug = None
+        area_error = None
+        if area is None:
+            area_label_candidates = (
+                "загальна площа",
+                "общая площадь",
+                "обща площа",
+                "total area",
+            )
+            area_locators = page.locator('p[data-nx-name="P3"]')
+            area_text = None
+            for index in range(await area_locators.count()):
+                text = _normalize_space(await area_locators.nth(index).inner_text())
+                if not text:
+                    continue
+                lowered = text.lower()
+                if any(label in lowered for label in area_label_candidates):
+                    area_text = text
+                    break
+            if area_text:
+                area_debug = area_text
+                match = re.search(r"([0-9]+(?:[\\.,][0-9]+)?)", area_text)
+                if match:
+                    raw_value = match.group(1).replace(",", ".")
+                    area = float(raw_value) if "." in raw_value else int(raw_value)
+                    sources["area"] = "dom"
+                else:
+                    area_error = "area number not found"
+            else:
+                area_error = "area not found"
 
         offer_id = _extract_offer_id_from_json_ld(json_ld_entries)
         alnum_id = _extract_alnum_id(args.url) or _extract_alnum_id(page.url)
@@ -861,7 +918,11 @@ async def _run() -> None:
     _print_field("price", price)
     _print_field("currency", currency)
     _print_field("location", location)
+    _print_field("location_debug", location_debug)
+    _print_field("location_error", location_error)
     _print_field("area", area)
+    _print_field("area_debug", area_debug)
+    _print_field("area_error", area_error)
     _print_field("description_len", description_len)
     _print_field("photos_count", len(photos))
     _print_field("photos", photos_clean)
