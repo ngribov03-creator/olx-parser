@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import re
-from pathlib import Path
 from typing import Iterable, Optional
 
 from bs4 import BeautifulSoup
@@ -416,20 +415,6 @@ def _find_phone_in_text(text: str) -> Optional[str]:
     return _normalize_space(match.group(0))
 
 
-def _write_network_payloads(payloads: list[dict[str, object]]) -> None:
-    output_path = Path("/tmp/olx_network.json")
-    existing: list[dict[str, object]] = []
-    if output_path.exists():
-        try:
-            existing_data = json.loads(output_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing_data = []
-        if isinstance(existing_data, list):
-            existing = existing_data
-    existing.extend(payloads)
-    output_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def _print_network_urls(payloads: list[dict[str, object]]) -> None:
     urls = [entry.get("url") for entry in payloads if isinstance(entry.get("url"), str)]
     print("network_json_urls:")
@@ -598,7 +583,6 @@ async def _run() -> None:
         except PlaywrightTimeoutError:
             pass
 
-        _write_network_payloads(network_json)
         _print_network_urls(network_json)
         _print_network_matches(network_json)
 
