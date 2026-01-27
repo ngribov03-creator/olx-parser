@@ -58,6 +58,13 @@ def _normalize_location(text: str) -> Optional[str]:
     return cleaned
 
 
+def _extract_offer_id(url: str) -> Optional[int]:
+    match = re.search(r"ID(\d+)", url)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def _iter_json_ld_objects(data: object) -> list[dict]:
     if isinstance(data, dict):
         graph = data.get("@graph")
@@ -532,6 +539,31 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
     return None, "none"
 
 
+async def get_phone(page, offer_id: int) -> Optional[str]:
+    url = f"https://www.olx.ua/api/v1/offers/{offer_id}/phone-view/"
+    try:
+        resp = await page.request.post(
+            url,
+            headers={
+                "referer": "https://www.olx.ua/",
+                "user-agent": await page.evaluate("navigator.userAgent"),
+            },
+        )
+    except Exception:
+        return None
+
+    if resp.status != 200:
+        return None
+
+    try:
+        data = await resp.json()
+    except Exception:
+        return None
+
+    phones = data.get("data", {}).get("phones", [])
+    return phones[0] if phones else None
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parse a single OLX listing URL via Playwright.")
     parser.add_argument("url", help="OLX listing URL to parse.")
@@ -625,10 +657,13 @@ async def _run() -> None:
             if area is not None:
                 sources["area"] = "desc_regex"
 
+        offer_id = _extract_offer_id(page.url) or _extract_offer_id(args.url)
         phone = None
         phone_source = "none"
         if not args.no_phone:
-            phone, phone_source = await _extract_phone(page)
+            if offer_id is not None:
+                phone = await get_phone(page, offer_id)
+                phone_source = "api" if phone else "none"
         sources["phone"] = phone_source
 
         await context.close()
