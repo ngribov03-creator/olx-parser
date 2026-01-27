@@ -37,7 +37,7 @@ def load_config() -> AppConfig:
     load_dotenv()
     olx_search_url = os.getenv("OLX_SEARCH_URL")
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    telegram_chat_id = os.getenv("TELEGRAM_CHANNEL_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
     if not olx_search_url:
         raise ValueError("OLX_SEARCH_URL is required")
     telegram_enabled = bool(telegram_bot_token and telegram_chat_id)

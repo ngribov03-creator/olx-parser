@@ -1,27 +1,15 @@
-"""SQLite persistence helpers."""
+"""SQLite persistence helpers for OLX offers."""
 
 from __future__ import annotations
 
 from datetime import datetime
 import json
 import sqlite3
-from typing import List, Optional
+from typing import Any, Iterable, Optional
 
 from db.models import ListingData
 
-DEFAULT_DB_PATH = "data.db"
-
-
-def _normalize_db_path(db_path: Optional[str]) -> str:
-    if not db_path:
-        return DEFAULT_DB_PATH
-    if "://" not in db_path:
-        return db_path
-    if db_path.startswith("sqlite:///"):
-        return db_path.replace("sqlite:///", "", 1)
-    if db_path.startswith("sqlite://"):
-        return db_path.replace("sqlite://", "", 1)
-    return db_path
+DB_PATH = "db/data.db"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -30,177 +18,242 @@ def _connect(db_path: str) -> sqlite3.Connection:
     return connection
 
 
-def _serialize_datetime(value: Optional[datetime]) -> Optional[str]:
-    if not value:
+def _ensure_parent_dir(db_path: str) -> None:
+    if "/" not in db_path:
+        return
+    parent = db_path.rsplit("/", 1)[0]
+    if parent:
+        import os
+
+        os.makedirs(parent, exist_ok=True)
+
+
+def _serialize_photos(photos: Iterable[str] | None) -> str:
+    if not photos:
+        return "[]"
+    return json.dumps(list(photos), ensure_ascii=False)
+
+
+def _normalize_offer_id(value: object) -> Optional[int]:
+    if value is None:
         return None
-    return value.isoformat()
-
-
-def _deserialize_datetime(value: Optional[str]) -> Optional[datetime]:
-    if not value:
+    if isinstance(value, int):
+        return value
+    try:
+        text = str(value)
+    except Exception:
+        return None
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if not digits:
         return None
     try:
-        return datetime.fromisoformat(value)
+        return int(digits)
     except ValueError:
         return None
 
 
-def init_db(db_path: Optional[str] = None) -> None:
-    path = _normalize_db_path(db_path)
-    with _connect(path) as connection:
+def _parse_price(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    cleaned = text.replace("\u00a0", " ")
+    digits = []
+    for ch in cleaned:
+        if ch.isdigit() or ch in {".", ","}:
+            digits.append(ch)
+    if not digits:
+        return None
+    number = "".join(digits).replace(" ", "")
+    if number.count(",") > 1 and "." not in number:
+        number = number.replace(",", "")
+    number = number.replace(",", ".")
+    try:
+        return float(number)
+    except ValueError:
+        return None
+
+
+def _offer_from_listing(listing: ListingData) -> dict[str, Any]:
+    return {
+        "offer_id": _normalize_offer_id(listing.external_id),
+        "alnum_id": listing.external_id,
+        "url": listing.url,
+        "title": listing.title,
+        "price": _parse_price(listing.price),
+        "currency": None,
+        "location": listing.location,
+        "area_m2": _parse_price(listing.area) if listing.area else None,
+        "description": listing.description,
+        "phone": listing.phone,
+        "photos": listing.photos,
+        "scraped_at": listing.scraped_at.isoformat() if listing.scraped_at else None,
+        "error": None,
+    }
+
+
+def init_db(db_path: str = DB_PATH) -> None:
+    _ensure_parent_dir(db_path)
+    with _connect(db_path) as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS offers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source TEXT NOT NULL,
-                external_id TEXT NOT NULL,
-                url TEXT NOT NULL UNIQUE,
-                title TEXT NOT NULL,
-                price TEXT NOT NULL,
-                description TEXT NOT NULL,
-                phone TEXT,
-                photos TEXT NOT NULL,
+                offer_id INTEGER UNIQUE,
+                alnum_id TEXT,
+                url TEXT,
+                title TEXT,
+                price REAL,
+                currency TEXT,
                 location TEXT,
-                area TEXT,
-                is_owner INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                scraped_at TEXT NOT NULL,
-                posted_to_telegram_at TEXT
+                area_m2 REAL,
+                description TEXT,
+                phone TEXT,
+                photos_json TEXT,
+                scraped_at TEXT,
+                posted_to_tg INTEGER DEFAULT 0,
+                posted_at TEXT,
+                tg_message_id TEXT,
+                error TEXT
             )
             """
         )
         connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_offers_posted ON offers(posted_to_telegram_at)"
+            "CREATE INDEX IF NOT EXISTS idx_offers_posted ON offers(posted_to_tg, id)"
         )
 
 
-def upsert_offer(listing: ListingData, db_path: Optional[str] = None) -> None:
-    path = _normalize_db_path(db_path)
-    init_db(path)
-    payload = json.dumps(listing.photos, ensure_ascii=False)
-    with _connect(path) as connection:
+def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) -> None:
+    init_db(db_path)
+    if isinstance(offer, ListingData):
+        payload = _offer_from_listing(offer)
+    else:
+        payload = dict(offer)
+    offer_id = _normalize_offer_id(payload.get("offer_id"))
+    photos_json = payload.get("photos_json")
+    if not photos_json:
+        photos_json = _serialize_photos(payload.get("photos"))
+    scraped_at = payload.get("scraped_at") or datetime.utcnow().isoformat()
+    with _connect(db_path) as connection:
         connection.execute(
             """
             INSERT INTO offers (
-                source,
-                external_id,
+                offer_id,
+                alnum_id,
                 url,
                 title,
                 price,
+                currency,
+                location,
+                area_m2,
                 description,
                 phone,
-                photos,
-                location,
-                area,
-                is_owner,
-                created_at,
+                photos_json,
                 scraped_at,
-                posted_to_telegram_at
+                posted_to_tg,
+                posted_at,
+                tg_message_id,
+                error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(url) DO UPDATE SET
-                source = excluded.source,
-                external_id = excluded.external_id,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(offer_id) DO UPDATE SET
+                alnum_id = excluded.alnum_id,
+                url = excluded.url,
                 title = excluded.title,
                 price = excluded.price,
+                currency = excluded.currency,
+                location = excluded.location,
+                area_m2 = excluded.area_m2,
                 description = excluded.description,
                 phone = excluded.phone,
-                photos = excluded.photos,
-                location = excluded.location,
-                area = excluded.area,
-                is_owner = excluded.is_owner,
-                created_at = excluded.created_at,
+                photos_json = excluded.photos_json,
                 scraped_at = excluded.scraped_at,
-                posted_to_telegram_at = COALESCE(
-                    offers.posted_to_telegram_at,
-                    excluded.posted_to_telegram_at
-                )
+                posted_to_tg = COALESCE(offers.posted_to_tg, excluded.posted_to_tg),
+                posted_at = COALESCE(offers.posted_at, excluded.posted_at),
+                tg_message_id = COALESCE(offers.tg_message_id, excluded.tg_message_id),
+                error = excluded.error
             """,
             (
-                listing.source,
-                listing.external_id,
-                listing.url,
-                listing.title,
-                listing.price,
-                listing.description,
-                listing.phone,
-                payload,
-                listing.location,
-                str(listing.area) if listing.area is not None else None,
-                1 if listing.is_owner else 0,
-                _serialize_datetime(listing.created_at),
-                _serialize_datetime(listing.scraped_at),
-                _serialize_datetime(listing.posted_to_telegram_at),
+                offer_id,
+                payload.get("alnum_id"),
+                payload.get("url"),
+                payload.get("title"),
+                payload.get("price"),
+                payload.get("currency"),
+                payload.get("location"),
+                payload.get("area_m2"),
+                payload.get("description"),
+                payload.get("phone"),
+                photos_json,
+                scraped_at,
+                int(payload.get("posted_to_tg", 0) or 0),
+                payload.get("posted_at"),
+                payload.get("tg_message_id"),
+                payload.get("error"),
             ),
         )
 
 
-def _row_to_listing(row: sqlite3.Row) -> ListingData:
-    photos: List[str] = []
-    raw_photos = row["photos"]
+def _row_to_offer(row: sqlite3.Row) -> dict[str, Any]:
+    photos = []
+    raw_photos = row["photos_json"]
     if raw_photos:
         try:
             photos = json.loads(raw_photos)
         except json.JSONDecodeError:
             photos = []
-    area_value = row["area"]
-    return ListingData(
-        source=row["source"],
-        external_id=row["external_id"],
-        url=row["url"],
-        title=row["title"],
-        price=row["price"],
-        description=row["description"],
-        phone=row["phone"],
-        photos=photos,
-        location=row["location"],
-        area=area_value,
-        is_owner=bool(row["is_owner"]),
-        created_at=_deserialize_datetime(row["created_at"]) or datetime.utcnow(),
-        scraped_at=_deserialize_datetime(row["scraped_at"]) or datetime.utcnow(),
-        posted_to_telegram_at=_deserialize_datetime(row["posted_to_telegram_at"]),
-    )
+    return {
+        "id": row["id"],
+        "offer_id": row["offer_id"],
+        "alnum_id": row["alnum_id"],
+        "url": row["url"],
+        "title": row["title"],
+        "price": row["price"],
+        "currency": row["currency"],
+        "location": row["location"],
+        "area_m2": row["area_m2"],
+        "description": row["description"],
+        "phone": row["phone"],
+        "photos": photos,
+        "photos_json": row["photos_json"],
+        "scraped_at": row["scraped_at"],
+        "posted_to_tg": row["posted_to_tg"],
+        "posted_at": row["posted_at"],
+        "tg_message_id": row["tg_message_id"],
+        "error": row["error"],
+    }
 
 
-def get_unposted_offers(
-    db_path: Optional[str] = None, limit: Optional[int] = None
-) -> List[ListingData]:
-    path = _normalize_db_path(db_path)
-    init_db(path)
-    query = """
-        SELECT
-            source,
-            external_id,
-            url,
-            title,
-            price,
-            description,
-            phone,
-            photos,
-            location,
-            area,
-            is_owner,
-            created_at,
-            scraped_at,
-            posted_to_telegram_at
-        FROM offers
-        WHERE posted_to_telegram_at IS NULL
-        ORDER BY scraped_at DESC
-    """
-    params: tuple[object, ...] = ()
-    if limit is not None:
-        query += " LIMIT ?"
-        params = (limit,)
-    with _connect(path) as connection:
-        rows = connection.execute(query, params).fetchall()
-    return [_row_to_listing(row) for row in rows]
+def get_unposted_offers(limit: int = 5, db_path: str = DB_PATH) -> list[dict[str, Any]]:
+    init_db(db_path)
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM offers
+            WHERE posted_to_tg = 0
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [_row_to_offer(row) for row in rows]
 
 
-def mark_posted(url: str, posted_at: datetime, db_path: Optional[str] = None) -> None:
-    path = _normalize_db_path(db_path)
-    init_db(path)
-    with _connect(path) as connection:
+def mark_posted(offer_id: int, tg_message_id: str, db_path: str = DB_PATH) -> None:
+    init_db(db_path)
+    posted_at = datetime.utcnow().isoformat()
+    with _connect(db_path) as connection:
         connection.execute(
-            "UPDATE offers SET posted_to_telegram_at = ? WHERE url = ?",
-            (_serialize_datetime(posted_at), url),
+            """
+            UPDATE offers
+            SET posted_to_tg = 1,
+                posted_at = ?,
+                tg_message_id = ?
+            WHERE offer_id = ?
+            """,
+            (posted_at, tg_message_id, offer_id),
         )
