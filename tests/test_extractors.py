@@ -8,7 +8,7 @@ def test_extract_location_from_jsonld_name() -> None:
 
 def test_extract_location_from_jsonld_address() -> None:
     data = {"address": {"addressLocality": "Львів", "addressRegion": "Львівська область"}}
-    assert extract_location_from_jsonld(data) == "Львів, Львівська область"
+    assert extract_location_from_jsonld(data) == "Львів"
 
 
 def test_extract_location_from_jsonld_area_served() -> None:

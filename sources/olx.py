@@ -90,6 +90,14 @@ def _normalize_location(text: str) -> Optional[str]:
     return cleaned
 
 
+def _normalize_city(text: str) -> Optional[str]:
+    normalized = _normalize_location(text)
+    if not normalized:
+        return None
+    city = normalized.split(",", 1)[0].strip()
+    return city or None
+
+
 def _extract_location_from_html(soup: BeautifulSoup) -> Optional[str]:
     location_tag = soup.select_one('[data-testid="location"]') or soup.select_one(
         '[data-testid="location-date"]'
@@ -97,7 +105,7 @@ def _extract_location_from_html(soup: BeautifulSoup) -> Optional[str]:
     if not location_tag:
         return None
     city_tag = location_tag.find("p") or location_tag
-    return _normalize_location(city_tag.get_text(" ", strip=True) or "")
+    return _normalize_city(city_tag.get_text(" ", strip=True) or "")
 
 
 def _get_first_offer(offers: object) -> Optional[dict]:
@@ -114,23 +122,15 @@ def _extract_location_from_address(
     address: object, source_prefix: str
 ) -> tuple[Optional[str], Optional[str]]:
     if isinstance(address, dict):
-        parts: List[str] = []
-        sources: List[str] = []
-        for key in ("streetAddress", "addressLocality", "addressRegion"):
+        for key in ("addressLocality", "city"):
             value = address.get(key)
             if isinstance(value, str):
-                cleaned = value.strip()
-                if cleaned:
-                    parts.append(cleaned)
-                    sources.append(f"{source_prefix}.{key}")
-        if parts:
-            combined = _normalize_location(", ".join(parts))
-            if combined:
-                source = "+".join(sources)
-                return combined, source
+                normalized = _normalize_city(value)
+                if normalized:
+                    return normalized, f"{source_prefix}.{key}"
         name = address.get("name")
         if isinstance(name, str):
-            normalized = _normalize_location(name)
+            normalized = _normalize_city(name)
             if normalized:
                 return normalized, f"{source_prefix}.name"
         for key in ("addressCountry",):
@@ -138,7 +138,7 @@ def _extract_location_from_address(
             if isinstance(value, dict):
                 nested = value.get("name")
                 if isinstance(nested, str):
-                    normalized = _normalize_location(nested)
+                    normalized = _normalize_city(nested)
                     if normalized:
                         return normalized, f"{source_prefix}.{key}.name"
         return None, None
@@ -150,7 +150,7 @@ def _extract_location_from_address(
                     return nested, source
         return None, None
     if isinstance(address, str):
-        normalized = _normalize_location(address)
+        normalized = _normalize_city(address)
         if normalized:
             return normalized, source_prefix
     return None, None
@@ -160,10 +160,10 @@ def _extract_location_from_address_fields(
     address: object, source_prefix: str
 ) -> tuple[Optional[str], Optional[str]]:
     if isinstance(address, dict):
-        for key in ("city", "addressLocality", "addressRegion"):
+        for key in ("city", "addressLocality"):
             value = address.get(key)
             if isinstance(value, str):
-                normalized = _normalize_location(value)
+                normalized = _normalize_city(value)
                 if normalized:
                     return normalized, f"{source_prefix}.{key}"
         return None, None
@@ -174,7 +174,7 @@ def _extract_location_from_address_fields(
                 return nested, source
         return None, None
     if isinstance(address, str):
-        normalized = _normalize_location(address)
+        normalized = _normalize_city(address)
         if normalized:
             return normalized, source_prefix
     return None, None
@@ -186,7 +186,7 @@ def _extract_location_name_from_location_field(
     if isinstance(location_field, dict):
         name = location_field.get("name")
         if isinstance(name, str):
-            normalized = _normalize_location(name)
+            normalized = _normalize_city(name)
             if normalized:
                 return normalized, f"{source_prefix}.name"
         return None, None
@@ -199,7 +199,7 @@ def _extract_location_name_from_location_field(
                 return nested, source
         return None, None
     if isinstance(location_field, str):
-        normalized = _normalize_location(location_field)
+        normalized = _normalize_city(location_field)
         if normalized:
             return normalized, source_prefix
     return None, None
