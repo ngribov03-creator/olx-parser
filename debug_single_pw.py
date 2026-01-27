@@ -429,11 +429,22 @@ def _extract_dom_photos(soup: BeautifulSoup) -> list[str]:
     return photos
 
 
+PHONE_REGEX = re.compile(r"(\+?380\d{9}|0\d{9})")
+
+
 def _find_phone_in_text(text: str) -> Optional[str]:
-    match = re.search(r"\+?\d[\d\s().-]{6,}\d", text)
-    if not match:
+    normalized = text.replace(" ", "").replace("-", "")
+    matches = PHONE_REGEX.findall(normalized)
+    if not matches:
         return None
-    return _normalize_space(match.group(0))
+    return matches[0]
+
+
+def _match_phone_with_logging(raw_text: str) -> Optional[str]:
+    match = _find_phone_in_text(raw_text)
+    print("phone_text:", raw_text[:120])
+    print("phone_match:", match)
+    return match
 
 
 def _print_network_urls(payloads: list[dict[str, object]]) -> None:
@@ -597,7 +608,7 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
                     text = await locator.nth(i).inner_text(timeout=1000)
                 except Exception:
                     continue
-                phone = _find_phone_in_text(text)
+                phone = _match_phone_with_logging(text)
                 if phone:
                     return phone
         return None
@@ -605,7 +616,6 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     container = button_locator.locator("xpath=..")
     sibling = button_locator.locator("xpath=following-sibling::*[1]")
     candidates = [
-        button_locator,
         container,
         container.locator("span"),
         container.locator("a"),
@@ -617,12 +627,7 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     phone = await _find_phone_in_locators(candidates)
     if phone:
         return phone
-
-    try:
-        body_text = await page.locator("body").inner_text(timeout=2000)
-    except PlaywrightTimeoutError:
-        body_text = ""
-    return _find_phone_in_text(body_text)
+    return None
 
 
 def _parse_args() -> argparse.Namespace:
