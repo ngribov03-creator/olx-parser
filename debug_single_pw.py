@@ -831,27 +831,49 @@ async def _run() -> None:
         location_debug = None
         location_error = None
         if not location:
-            city_text = None
-            region_text = None
-            city_locator = page.locator('p[data-nx-name="P2"]')
-            if await city_locator.count() > 0:
-                city_text = _normalize_space(await city_locator.first.inner_text())
-            if city_text:
-                region_locator = city_locator.first.locator(
-                    "xpath=following-sibling::p[@data-nx-name='P3']",
-                )
+            invalid_city_markers = ("ЗВ’ЯЗАТИСЯ", "Показати", "Бізнес")
+
+            def _is_invalid_city(value: str) -> bool:
+                return any(marker.lower() in value.lower() for marker in invalid_city_markers)
+
+            async def _extract_from_container(container) -> tuple[Optional[str], Optional[str]]:
+                city_raw_value = None
+                region_raw_value = None
+                city_locator = container.locator('p[data-nx-name="P2"]')
+                if await city_locator.count() > 0:
+                    city_raw_value = _normalize_space(await city_locator.first.inner_text())
+                region_locator = container.locator('p[data-nx-name="P3"]')
                 if await region_locator.count() > 0:
-                    region_text = _normalize_space(await region_locator.first.inner_text())
-                if not region_text:
-                    region_candidates = page.locator('p[data-nx-name="P3"]')
-                    if await region_candidates.count() > 0:
-                        region_text = _normalize_space(await region_candidates.first.inner_text())
-                location_parts = [city_text]
-                if region_text and region_text != city_text:
-                    location_parts.append(region_text)
-                location = ", ".join(location_parts)
-                location_debug = f"city: {city_text}; region: {region_text}"
-                sources["location"] = "dom"
+                    region_raw_value = _normalize_space(await region_locator.first.inner_text())
+                return city_raw_value, region_raw_value
+
+            async def _try_anchor(anchor_locator, anchor_label: str) -> tuple[Optional[str], Optional[str]]:
+                for level in (1, 2, 3):
+                    container = anchor_locator.locator(f"xpath=ancestor::div[{level}]")
+                    if await container.count() == 0:
+                        continue
+                    city_raw, region_raw = await _extract_from_container(container.first)
+                    if not city_raw or _is_invalid_city(city_raw):
+                        continue
+                    location_parts = [city_raw]
+                    if region_raw and region_raw != city_raw:
+                        location_parts.append(region_raw)
+                    built_location = ", ".join(location_parts)
+                    debug = (
+                        "city_raw: "
+                        f"{city_raw}; region_raw: {region_raw}; "
+                        f"used_anchor: {anchor_label}; used_ancestor_level: {level}"
+                    )
+                    return built_location, debug
+                return None, None
+
+            anchor = page.get_by_text("Місцезнаходження", exact=False).first
+            location, location_debug = await _try_anchor(anchor, "Місцезнаходження")
+            if not location:
+                icon_anchor = page.locator('img[alt="Location"]').first
+                location, location_debug = await _try_anchor(icon_anchor, "Location icon")
+            if location:
+                sources["location"] = "dom_location_block"
             else:
                 location_error = "city not found"
 
