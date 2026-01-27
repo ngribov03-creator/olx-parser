@@ -584,33 +584,38 @@ async def _find_phone_button(page):
 
 
 async def get_phone(page, offer_id: int) -> Optional[str]:
-    del offer_id
     button_locator = await _find_phone_button(page)
     if button_locator is None:
         print("phone button not found")
         return None
 
+    response_task = asyncio.create_task(
+        page.wait_for_response(
+            lambda r: f"/api/v1/offers/{offer_id}/limited-phones" in r.url
+            and r.status == 200,
+            timeout=15000,
+        )
+    )
     try:
         print("clicking phone button...")
         await button_locator.click(timeout=2000)
         print("clicked")
+        resp = await response_task
     except PlaywrightTimeoutError:
+        response_task.cancel()
         return None
     except Exception:
+        response_task.cancel()
         return None
 
-    await page.wait_for_timeout(1500)
-    try:
-        text = await page.inner_text("body")
-    except PlaywrightTimeoutError:
-        text = ""
-    print("page_text_sample:", text[:300])
-    cleaned_text = re.sub(r"[\s-]+", "", text)
-    match = re.search(r"(\+?380\d{9}|0\d{9})", cleaned_text)
-    print("phone_match:", match)
-    if match:
-        return match.group(0)
-    return None
+    data = await resp.json()
+    phones = data.get("data", {}).get("phones", [])
+    phone = phones[0] if phones else None
+    phone = phone.replace(" ", "") if phone else None
+    print("PHONE RESPONSE URL:", resp.url)
+    print("PHONE JSON:", data)
+    print("PHONE:", phone)
+    return phone
 
 
 def _parse_args() -> argparse.Namespace:
