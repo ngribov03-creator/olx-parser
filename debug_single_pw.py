@@ -537,6 +537,14 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     except Exception:
         return None
 
+    try:
+        response_text = await resp.text()
+    except Exception as exc:
+        response_text = f"<failed to read response text: {exc}>"
+
+    print("phone-view status:", resp.status)
+    print("phone-view text:", response_text)
+
     if resp.status != 200:
         return None
 
@@ -642,6 +650,7 @@ async def _run() -> None:
                 sources["area"] = "desc_regex"
 
         offer_id = _extract_offer_id(page.url) or _extract_offer_id(args.url)
+        print("offer_id:", offer_id)
         phone_source = "none"
         phone = (
             await get_phone(page, offer_id)
