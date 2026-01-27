@@ -604,20 +604,6 @@ def _match_phone_endpoint(url: str) -> Optional[str]:
     return None
 
 
-async def _wait_phone_response(page, timeout: int, exclude: Optional[str] = None):
-    def _predicate(response) -> bool:
-        if response.request.resource_type not in {"xhr", "fetch"}:
-            return False
-        endpoint = _match_phone_endpoint(response.url)
-        if endpoint is None:
-            return False
-        if exclude and endpoint == exclude:
-            return False
-        return True
-
-    return await page.wait_for_response(_predicate, timeout=timeout)
-
-
 async def get_phone(page, offer_id: int) -> Optional[str]:
     del offer_id
     button_locator = await _find_phone_button(page)
@@ -625,45 +611,21 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
         print("phone button not found")
         return None
 
-    limited_response = None
-    phone_view_response = None
+    response = None
     try:
-        limited_waiter = page.expect_response(
-            lambda r: "/limited-phones" in r.url,
+        async with page.expect_response(
+            lambda r: "/limited-phones" in r.url or "/phone-view" in r.url,
             timeout=6000,
-        )
-        phone_view_waiter = page.expect_response(
-            lambda r: "/phone-view" in r.url,
-            timeout=6000,
-        )
-        print("clicking phone button...")
-        await button_locator.click(timeout=2000)
-        print("clicked")
-        try:
-            limited_response = await limited_waiter.value
-        except PlaywrightTimeoutError:
-            limited_response = None
-        try:
-            phone_view_response = await phone_view_waiter.value
-        except PlaywrightTimeoutError:
-            phone_view_response = None
+        ) as response_info:
+            print("clicking phone button...")
+            await button_locator.click(timeout=2000)
+            print("clicked")
+        response = await response_info.value
+    except PlaywrightTimeoutError:
+        return None
     except Exception:
         return None
 
-    for response in (limited_response, phone_view_response):
-        if response is None:
-            continue
-        endpoint = _match_phone_endpoint(response.url) or "unknown"
-        try:
-            response_text = await response.text()
-        except Exception as exc:
-            response_text = f"<failed to read text: {exc}>"
-        print(f"phone endpoint: {endpoint}")
-        print(f"phone response url: {response.url}")
-        print(f"phone response status: {response.status}")
-        print(f"phone response text (200): {response_text[:200]}")
-
-    response = limited_response or phone_view_response
     if response is None:
         return None
 
@@ -676,38 +638,10 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     phone = _parse_phone_payload(payload)
     if phone:
         return phone
-
-    if limited_response and phone_view_response:
-        fallback_response = phone_view_response if response is limited_response else limited_response
-        try:
-            fallback_payload = await fallback_response.json()
-        except Exception:
-            return None
-        return _parse_phone_payload(fallback_payload)
-
-    fallback_endpoint = "limited-phones" if endpoint == "phone-view" else "phone-view"
-    try:
-        fallback_response = await _wait_phone_response(
-            page,
-            timeout=6000,
-            exclude=endpoint if endpoint in {"limited-phones", "phone-view"} else None,
-        )
-    except Exception:
-        return None
-
-    fallback_name = _match_phone_endpoint(fallback_response.url) or fallback_endpoint
-    try:
-        fallback_payload = await fallback_response.json()
-    except Exception as exc:
-        print(f"phone endpoint: {fallback_name}")
-        print(f"phone response url: {fallback_response.url}")
-        print(f"phone json: <failed to read json: {exc}>")
-        return None
-
-    print(f"phone endpoint: {fallback_name}")
-    print(f"phone response url: {fallback_response.url}")
-    print(f"phone json: {fallback_payload}")
-    return _parse_phone_payload(fallback_payload)
+    print(f"phone endpoint: {endpoint}")
+    print(f"phone response url: {response.url}")
+    print(f"phone json: {payload}")
+    return None
 
 
 def _parse_args() -> argparse.Namespace:
