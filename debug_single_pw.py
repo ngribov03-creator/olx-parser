@@ -430,6 +430,8 @@ def _extract_dom_photos(soup: BeautifulSoup) -> list[str]:
 
 
 PHONE_REGEX = re.compile(r"(\+?380\d{9}|0\d{9})")
+PHONE_REGEX_SPACES = re.compile(r"(\+?38\s?0?\d{2}\s?\d{3}\s?\d{2}\s?\d{2})")
+PHONE_REGEX_COMPACT = re.compile(r"(\+?380\d{9}|0\d{9})")
 
 
 def _find_phone_in_text(text: str) -> Optional[str]:
@@ -438,6 +440,17 @@ def _find_phone_in_text(text: str) -> Optional[str]:
     if not matches:
         return None
     return matches[0]
+
+
+def _extract_phone_from_parent_text(parent_text: str) -> Optional[str]:
+    match = PHONE_REGEX_SPACES.search(parent_text)
+    if match:
+        return match.group(1)
+    normalized = re.sub(r"[\s-]+", "", parent_text)
+    match = PHONE_REGEX_COMPACT.search(normalized)
+    if match:
+        return match.group(1)
+    return None
 
 
 def _match_phone_with_logging(raw_text: str) -> Optional[str]:
@@ -558,10 +571,9 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
 
 async def _find_phone_button(page):
     selectors = [
+        "button[data-testid*='phone']",
+        "a[data-testid*='phone']",
         "[data-testid*='phone']",
-        "button:has-text(\"Показати телефон\")",
-        "button:has-text(\"Показать телефон\")",
-        "a[href*='phone']",
     ]
     for selector in selectors:
         locator = page.locator(selector)
@@ -577,6 +589,10 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     if button_locator is None:
         print("phone button not found")
         return None
+    button_handle = await button_locator.element_handle()
+    if button_handle is None:
+        return None
+    parent_handle = await button_handle.evaluate_handle("el => el.parentElement")
 
     try:
         print("clicking phone button...")
@@ -587,21 +603,10 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
     except Exception:
         return None
 
-    try:
-        tel_element = await page.wait_for_selector('a[href^="tel:"], a[href*="tel"]', timeout=5000)
-    except PlaywrightTimeoutError:
-        return None
-
-    element_text = await tel_element.get_attribute("href")
-    phone_match: Optional[str] = None
-    if element_text and element_text.startswith("tel:"):
-        phone_match = element_text.replace("tel:", "", 1).strip() or None
-    else:
-        if element_text is None:
-            element_text = await tel_element.inner_text()
-        phone_match = _find_phone_in_text(element_text or "")
-
-    print("tel_element_text:", element_text)
+    await asyncio.sleep(1.5)
+    parent_text = await parent_handle.evaluate("el => (el ? el.innerText : '')")
+    phone_match = _extract_phone_from_parent_text(parent_text or "")
+    print("parent_text:", parent_text)
     print("phone_match:", phone_match)
     return phone_match
 
