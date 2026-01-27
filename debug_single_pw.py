@@ -658,12 +658,14 @@ async def _run() -> None:
                 sources["area"] = "desc_regex"
 
         offer_id = _extract_offer_id(page.url) or _extract_offer_id(args.url)
-        phone = None
         phone_source = "none"
-        if not args.no_phone:
-            if offer_id is not None:
-                phone = await get_phone(page, offer_id)
-                phone_source = "api" if phone else "none"
+        phone = (
+            await get_phone(page, offer_id)
+            if (not args.no_phone and offer_id is not None)
+            else None
+        )
+        if phone:
+            phone_source = "api"
         sources["phone"] = phone_source
 
         await context.close()
