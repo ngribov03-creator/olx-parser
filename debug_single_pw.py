@@ -613,21 +613,27 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
 
     response = None
     try:
-        async with page.expect_response(
+        response_info = page.expect_response(
             lambda r: "/limited-phones" in r.url or "/phone-view" in r.url,
-            timeout=6000,
-        ) as response_info:
-            print("clicking phone button...")
-            await button_locator.click(timeout=2000)
-            print("clicked")
+            timeout=12000,
+        )
+        print("clicking phone button...")
+        await button_locator.click(timeout=2000)
+        print("clicked")
         response = await response_info.value
     except PlaywrightTimeoutError:
+        print("phone xhr not captured")
         return None
     except Exception:
         return None
 
     if response is None:
         return None
+
+    response_text = await response.text()
+    print(f"phone xhr url: {response.url}")
+    print(f"phone xhr status: {response.status}")
+    print(f"phone xhr body: {response_text[:200]}")
 
     endpoint = _match_phone_endpoint(response.url) or "unknown"
     try:
