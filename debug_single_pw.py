@@ -57,8 +57,29 @@ def _normalize_location(text: str) -> Optional[str]:
     return cleaned
 
 
-def _extract_offer_id(url: str) -> Optional[int]:
-    match = re.search(r"ID(\d+)", url)
+def _extract_offer_id_from_json_ld(entries: Iterable[dict]) -> Optional[int]:
+    id_keys = {"offerid", "offer_id", "sku"}
+    for key, value in _iter_json_items(list(entries)):
+        if not key or key.lower() not in id_keys:
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            match = re.search(r"\d{3,}", value)
+            if match:
+                return int(match.group(0))
+    return None
+
+
+def _extract_alnum_id(url: str) -> Optional[str]:
+    match = re.search(r"-ID([A-Za-z0-9]+)\.html", url)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _extract_offer_id_from_html(html: str) -> Optional[int]:
+    match = re.search(r"/api/v1/offers/(\d+)/", html)
     if match:
         return int(match.group(1))
     return None
@@ -572,6 +593,7 @@ async def _run() -> None:
         context = await browser.new_context()
         page = await context.new_page()
         network_json: list[dict[str, object]] = []
+        offer_id_from_request: Optional[int] = None
 
         async def _handle_response(response) -> None:
             request = response.request
@@ -583,6 +605,15 @@ async def _run() -> None:
                 return
             network_json.append({"url": response.url, "json": payload})
 
+        async def _handle_request(request) -> None:
+            nonlocal offer_id_from_request
+            if offer_id_from_request is not None:
+                return
+            match = re.search(r"/api/v1/offers/(\d+)/", request.url)
+            if match:
+                offer_id_from_request = int(match.group(1))
+
+        page.on("request", _handle_request)
         page.on("response", _handle_response)
         await page.goto(args.url, wait_until="domcontentloaded")
         await page.wait_for_timeout(1500)
@@ -649,7 +680,11 @@ async def _run() -> None:
             if area is not None:
                 sources["area"] = "desc_regex"
 
-        offer_id = _extract_offer_id(page.url) or _extract_offer_id(args.url)
+        offer_id = _extract_offer_id_from_json_ld(json_ld_entries)
+        alnum_id = _extract_alnum_id(args.url) or _extract_alnum_id(page.url)
+        print("alnum_id:", alnum_id)
+        if offer_id is None:
+            offer_id = offer_id_from_request or _extract_offer_id_from_html(html)
         print("offer_id:", offer_id)
         phone_source = "none"
         phone = (
