@@ -160,7 +160,7 @@ def _extract_location_from_address_fields(
     address: object, source_prefix: str
 ) -> tuple[Optional[str], Optional[str]]:
     if isinstance(address, dict):
-        for key in ("addressLocality", "addressRegion"):
+        for key in ("city", "addressLocality", "addressRegion"):
             value = address.get(key)
             if isinstance(value, str):
                 normalized = _normalize_location(value)
