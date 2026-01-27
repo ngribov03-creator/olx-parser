@@ -545,37 +545,125 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
     return None, "none"
 
 
+def _find_phone_in_json(data: object) -> Optional[str]:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key.lower() in {"phone", "telephone", "tel"} and isinstance(value, str):
+                normalized = " ".join(value.split())
+                if normalized:
+                    return normalized
+            if isinstance(value, (dict, list)):
+                nested = _find_phone_in_json(value)
+                if nested:
+                    return nested
+        return None
+    if isinstance(data, list):
+        for item in data:
+            nested = _find_phone_in_json(item)
+            if nested:
+                return nested
+    return None
+
+
+async def _click_phone_button(page) -> bool:
+    for text in PHONE_BUTTON_TEXTS:
+        locator = page.locator("button, a", has_text=text)
+        if await locator.count() == 0:
+            continue
+        try:
+            await locator.first.click(timeout=2000)
+            return True
+        except PlaywrightTimeoutError:
+            continue
+    return False
+
+
+def _parse_phone_payload(payload: object) -> Optional[str]:
+    if isinstance(payload, dict):
+        phones = payload.get("data", {}).get("phones", [])
+        if isinstance(phones, list) and phones:
+            if isinstance(phones[0], str) and phones[0].strip():
+                return " ".join(phones[0].split())
+        nested = _find_phone_in_json(payload)
+        if nested:
+            return nested
+    elif isinstance(payload, list):
+        nested = _find_phone_in_json(payload)
+        if nested:
+            return nested
+    return None
+
+
+def _match_phone_endpoint(url: str) -> Optional[str]:
+    if "/limited-phones" in url:
+        return "limited-phones"
+    if "/phone-view" in url:
+        return "phone-view"
+    return None
+
+
+async def _wait_phone_response(page, timeout: int, exclude: Optional[str] = None):
+    def _predicate(response) -> bool:
+        if response.request.resource_type not in {"xhr", "fetch"}:
+            return False
+        endpoint = _match_phone_endpoint(response.url)
+        if endpoint is None:
+            return False
+        if exclude and endpoint == exclude:
+            return False
+        return True
+
+    return await page.wait_for_response(_predicate, timeout=timeout)
+
+
 async def get_phone(page, offer_id: int) -> Optional[str]:
-    url = f"https://www.olx.ua/api/v1/offers/{offer_id}/phone-view/"
+    del offer_id
+    response_task = asyncio.create_task(_wait_phone_response(page, timeout=10000))
+    clicked = await _click_phone_button(page)
+    if not clicked:
+        response_task.cancel()
+        return None
+
     try:
-        resp = await page.request.post(
-            url,
-            headers={
-                "referer": "https://www.olx.ua/",
-                "user-agent": await page.evaluate("navigator.userAgent"),
-            },
+        response = await response_task
+    except Exception:
+        return None
+
+    endpoint = _match_phone_endpoint(response.url) or "unknown"
+    try:
+        payload = await response.json()
+    except Exception as exc:
+        print(f"phone endpoint: {endpoint}")
+        print(f"phone json: <failed to read json: {exc}>")
+        return None
+
+    print(f"phone endpoint: {endpoint}")
+    print(f"phone json: {payload}")
+    phone = _parse_phone_payload(payload)
+    if phone:
+        return phone
+
+    fallback_endpoint = "limited-phones" if endpoint == "phone-view" else "phone-view"
+    try:
+        fallback_response = await _wait_phone_response(
+            page,
+            timeout=6000,
+            exclude=endpoint if endpoint in {"limited-phones", "phone-view"} else None,
         )
     except Exception:
         return None
 
+    fallback_name = _match_phone_endpoint(fallback_response.url) or fallback_endpoint
     try:
-        response_text = await resp.text()
+        fallback_payload = await fallback_response.json()
     except Exception as exc:
-        response_text = f"<failed to read response text: {exc}>"
-
-    print("phone-view status:", resp.status)
-    print("phone-view text:", response_text)
-
-    if resp.status != 200:
+        print(f"phone endpoint: {fallback_name}")
+        print(f"phone json: <failed to read json: {exc}>")
         return None
 
-    try:
-        data = await resp.json()
-    except Exception:
-        return None
-
-    phones = data.get("data", {}).get("phones", [])
-    return phones[0] if phones else None
+    print(f"phone endpoint: {fallback_name}")
+    print(f"phone json: {fallback_payload}")
+    return _parse_phone_payload(fallback_payload)
 
 
 def _parse_args() -> argparse.Namespace:
