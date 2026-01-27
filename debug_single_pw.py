@@ -545,31 +545,11 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
     return None, "none"
 
 
-def _find_phone_in_json(data: object) -> Optional[str]:
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if key.lower() in {"phone", "telephone", "tel"} and isinstance(value, str):
-                normalized = " ".join(value.split())
-                if normalized:
-                    return normalized
-            if isinstance(value, (dict, list)):
-                nested = _find_phone_in_json(value)
-                if nested:
-                    return nested
-        return None
-    if isinstance(data, list):
-        for item in data:
-            nested = _find_phone_in_json(item)
-            if nested:
-                return nested
-    return None
-
-
 async def _find_phone_button(page):
     selectors = [
+        "[data-testid*='phone']",
         "button:has-text(\"Показати телефон\")",
         "button:has-text(\"Показать телефон\")",
-        "[data-testid*='phone']",
         "a[href*='phone']",
     ]
     for selector in selectors:
@@ -580,30 +560,6 @@ async def _find_phone_button(page):
     return None
 
 
-def _parse_phone_payload(payload: object) -> Optional[str]:
-    if isinstance(payload, dict):
-        phones = payload.get("data", {}).get("phones", [])
-        if isinstance(phones, list) and phones:
-            if isinstance(phones[0], str) and phones[0].strip():
-                return " ".join(phones[0].split())
-        nested = _find_phone_in_json(payload)
-        if nested:
-            return nested
-    elif isinstance(payload, list):
-        nested = _find_phone_in_json(payload)
-        if nested:
-            return nested
-    return None
-
-
-def _match_phone_endpoint(url: str) -> Optional[str]:
-    if "/limited-phones" in url:
-        return "limited-phones"
-    if "/phone-view" in url:
-        return "phone-view"
-    return None
-
-
 async def get_phone(page, offer_id: int) -> Optional[str]:
     del offer_id
     button_locator = await _find_phone_button(page)
@@ -611,43 +567,62 @@ async def get_phone(page, offer_id: int) -> Optional[str]:
         print("phone button not found")
         return None
 
-    response = None
     try:
-        response_info = page.expect_response(
-            lambda r: "/limited-phones" in r.url or "/phone-view" in r.url,
-            timeout=12000,
-        )
         print("clicking phone button...")
         await button_locator.click(timeout=2000)
         print("clicked")
-        response = await response_info.value
     except PlaywrightTimeoutError:
-        print("phone xhr not captured")
         return None
     except Exception:
         return None
 
-    if response is None:
+    await page.wait_for_timeout(1500)
+
+    tel_locator = page.locator("a[href^='tel:']")
+    if await tel_locator.count() > 0:
+        href = await tel_locator.first.get_attribute("href")
+        if href:
+            phone = href.replace("tel:", "").strip()
+            if phone:
+                return phone
+
+    async def _find_phone_in_locators(locators: list) -> Optional[str]:
+        for locator in locators:
+            try:
+                count = await locator.count()
+            except Exception:
+                continue
+            for i in range(min(count, 5)):
+                try:
+                    text = await locator.nth(i).inner_text(timeout=1000)
+                except Exception:
+                    continue
+                phone = _find_phone_in_text(text)
+                if phone:
+                    return phone
         return None
 
-    response_text = await response.text()
-    print(f"phone xhr url: {response.url}")
-    print(f"phone xhr status: {response.status}")
-    print(f"phone xhr body: {response_text[:200]}")
-
-    endpoint = _match_phone_endpoint(response.url) or "unknown"
-    try:
-        payload = await response.json()
-    except Exception:
-        return None
-
-    phone = _parse_phone_payload(payload)
+    container = button_locator.locator("xpath=..")
+    sibling = button_locator.locator("xpath=following-sibling::*[1]")
+    candidates = [
+        button_locator,
+        container,
+        container.locator("span"),
+        container.locator("a"),
+        container.locator("button"),
+        sibling,
+        sibling.locator("span"),
+        sibling.locator("a"),
+    ]
+    phone = await _find_phone_in_locators(candidates)
     if phone:
         return phone
-    print(f"phone endpoint: {endpoint}")
-    print(f"phone response url: {response.url}")
-    print(f"phone json: {payload}")
-    return None
+
+    try:
+        body_text = await page.locator("body").inner_text(timeout=2000)
+    except PlaywrightTimeoutError:
+        body_text = ""
+    return _find_phone_in_text(body_text)
 
 
 def _parse_args() -> argparse.Namespace:
