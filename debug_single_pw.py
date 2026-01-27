@@ -12,15 +12,6 @@ from bs4 import BeautifulSoup
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-INVALID_LOCATION_MARKERS = {
-    "obyavlenie",
-    "оголошення",
-    "україна",
-    "нерухомість",
-    "недвижимость",
-    "real estate",
-}
-
 PHONE_BUTTON_TEXTS = (
     "Показати телефон",
     "Показать телефон",
@@ -49,12 +40,7 @@ def _normalize_space(value: str) -> str:
 
 def _normalize_location(text: str) -> Optional[str]:
     cleaned = _normalize_space(text)
-    if not cleaned:
-        return None
-    lowered = cleaned.lower()
-    if any(marker in lowered for marker in INVALID_LOCATION_MARKERS):
-        return None
-    return cleaned
+    return cleaned or None
 
 
 def _extract_offer_id_from_json_ld(entries: Iterable[dict]) -> Optional[int]:
@@ -121,61 +107,30 @@ def _extract_text(soup: BeautifulSoup, selectors: Iterable[str]) -> Optional[str
     return None
 
 
-def _extract_location_from_address(address: object) -> Optional[str]:
-    if isinstance(address, dict):
-        parts: list[str] = []
-        for key in ("streetAddress", "addressLocality", "addressRegion"):
-            value = address.get(key)
-            if isinstance(value, str):
-                cleaned = value.strip()
-                if cleaned:
-                    parts.append(cleaned)
-        if parts:
-            return _normalize_location(", ".join(parts))
-        name = address.get("name")
-        if isinstance(name, str):
-            return _normalize_location(name)
-        return None
-    if isinstance(address, list):
-        for item in address:
-            nested = _extract_location_from_address(item)
-            if nested:
-                return nested
-    if isinstance(address, str):
-        return _normalize_location(address)
-    return None
-
-
-def _extract_location_from_address_fields(address: object) -> Optional[str]:
-    if isinstance(address, dict):
-        parts: list[str] = []
-        for key in ("addressLocality", "addressRegion"):
-            value = address.get(key)
-            if isinstance(value, str):
-                cleaned = value.strip()
-                if cleaned:
-                    parts.append(cleaned)
-        if parts:
-            return _normalize_location(", ".join(parts))
-        name = address.get("name")
-        if isinstance(name, str):
-            return _normalize_location(name)
-        nested = address.get("address")
-        if nested:
-            return _extract_location_from_address_fields(nested)
-        return None
-    if isinstance(address, list):
-        for item in address:
-            nested = _extract_location_from_address_fields(item)
-            if nested:
-                return nested
-    if isinstance(address, str):
-        return _normalize_location(address)
-    return None
-
-
 def _extract_location_from_json_ld(entries: Iterable[dict]) -> Optional[str]:
     for entry in entries:
+        offers = entry.get("offers")
+        offer_list = offers if isinstance(offers, list) else [offers]
+        for offer in offer_list:
+            if not isinstance(offer, dict):
+                continue
+            area_served = offer.get("areaServed")
+            if isinstance(area_served, dict):
+                name = area_served.get("name")
+                if isinstance(name, str):
+                    normalized = _normalize_location(name)
+                    if normalized:
+                        return normalized
+            elif isinstance(area_served, list):
+                for item in area_served:
+                    if not isinstance(item, dict):
+                        continue
+                    name = item.get("name")
+                    if isinstance(name, str):
+                        normalized = _normalize_location(name)
+                        if normalized:
+                            return normalized
+
         location_field = entry.get("location")
         if isinstance(location_field, dict):
             name = location_field.get("name")
@@ -183,97 +138,23 @@ def _extract_location_from_json_ld(entries: Iterable[dict]) -> Optional[str]:
                 normalized = _normalize_location(name)
                 if normalized:
                     return normalized
-            address = location_field.get("address")
-            if address:
-                nested = _extract_location_from_address(address)
-                if nested:
-                    return nested
-        elif location_field:
-            nested = _extract_location_from_address(location_field)
-            if nested:
-                return nested
+        elif isinstance(location_field, list):
+            for item in location_field:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name")
+                if isinstance(name, str):
+                    normalized = _normalize_location(name)
+                    if normalized:
+                        return normalized
+
         address = entry.get("address")
-        if address:
-            nested = _extract_location_from_address(address)
-            if nested:
-                return nested
-    return None
-
-
-def extract_location_from_jsonld(jsonld: object) -> Optional[str]:
-    if isinstance(jsonld, list):
-        for entry in jsonld:
-            nested = extract_location_from_jsonld(entry)
-            if nested:
-                return nested
-        return None
-    if not isinstance(jsonld, dict):
-        return None
-
-    location_field = jsonld.get("location")
-    if isinstance(location_field, dict):
-        name = location_field.get("name")
-        if isinstance(name, str):
-            normalized = _normalize_location(name)
-            if normalized:
-                return normalized
-        address = location_field.get("address")
-        if address:
-            nested = _extract_location_from_address_fields(address)
-            if nested:
-                return nested
-    elif isinstance(location_field, list):
-        for item in location_field:
-            if isinstance(item, dict):
-                name = item.get("name")
-                if isinstance(name, str):
-                    normalized = _normalize_location(name)
-                    if normalized:
-                        return normalized
-                address = item.get("address")
-                if address:
-                    nested = _extract_location_from_address_fields(address)
-                    if nested:
-                        return nested
-            elif isinstance(item, str):
-                normalized = _normalize_location(item)
+        if isinstance(address, dict):
+            locality = address.get("addressLocality")
+            if isinstance(locality, str):
+                normalized = _normalize_location(locality)
                 if normalized:
                     return normalized
-    elif isinstance(location_field, str):
-        normalized = _normalize_location(location_field)
-        if normalized:
-            return normalized
-
-    address = jsonld.get("address")
-    if address:
-        nested = _extract_location_from_address_fields(address)
-        if nested:
-            return nested
-
-    area_served = jsonld.get("areaServed")
-    if isinstance(area_served, dict):
-        name = area_served.get("name")
-        if isinstance(name, str):
-            normalized = _normalize_location(name)
-            if normalized:
-                return normalized
-    elif isinstance(area_served, list):
-        for item in area_served:
-            if isinstance(item, dict):
-                name = item.get("name")
-                if isinstance(name, str):
-                    normalized = _normalize_location(name)
-                    if normalized:
-                        return normalized
-            elif isinstance(item, str):
-                normalized = _normalize_location(item)
-                if normalized:
-                    return normalized
-    elif isinstance(area_served, str):
-        normalized = _normalize_location(area_served)
-        if normalized:
-            return normalized
-
     return None
 
 
@@ -322,18 +203,21 @@ _AREA_SQM_RE = re.compile(
     r"(?P<value>\d+(?:[.,]\d+)?)\s*(?:м2|м²|кв\.?\s*м|кв\s*м)\b",
     re.IGNORECASE,
 )
+_AREA_HA_RE = re.compile(r"(?P<value>\d+(?:[.,]\d+)?)\s*(?:га|ha)\b", re.IGNORECASE)
 _SOTKA_RE = re.compile(r"\bсот(?:ок|ки|ка)?\.?", re.IGNORECASE)
 
 
-def extract_area_from_text(description: str) -> Optional[float | int]:
+def extract_area_from_text(description: str) -> Optional[str]:
     if not description:
         return None
     match = _AREA_SQM_RE.search(description)
     if match:
         value = match.group("value").replace(",", ".")
-        if "." in value:
-            return float(value)
-        return int(value)
+        return f"{value} m2"
+    match = _AREA_HA_RE.search(description)
+    if match:
+        value = match.group("value").replace(",", ".")
+        return f"{value} ha"
     if _SOTKA_RE.search(description):
         return None
     return None
@@ -381,20 +265,6 @@ def _split_price_and_currency(value: str) -> tuple[Optional[str], Optional[str]]
     match = re.search(r"[\d\s.,]+", cleaned)
     price = match.group(0).strip() if match else cleaned
     return price or None, currency
-
-
-def _extract_dom_location(soup: BeautifulSoup) -> Optional[str]:
-    selectors = (
-        '[data-testid="location"]',
-        '[data-testid="location-date"]',
-        '[data-testid="ad-location"]',
-        '[data-testid="ad_location"]',
-        '[data-cy="ad_location"]',
-    )
-    location = _extract_text(soup, selectors)
-    if location:
-        return _normalize_location(location)
-    return None
 
 
 def _extract_dom_description(soup: BeautifulSoup) -> Optional[str]:
@@ -692,21 +562,10 @@ async def _run() -> None:
                     sources["currency"] = "dom"
 
         location = _extract_location_from_json_ld(json_ld_entries)
-        sources["location"] = "jsonld" if location else "none"
-        if not location:
-            location = _extract_dom_location(soup)
-            sources["location"] = "dom" if location else "none"
-        if not location:
-            location = extract_location_from_jsonld(json_ld_entries)
-            if location:
-                sources["location"] = "jsonld_location"
+        location_source = "jsonld"
 
-        area = None
-        sources["area"] = "none"
-        if not area and description:
-            area = extract_area_from_text(description)
-            if area is not None:
-                sources["area"] = "desc_regex"
+        area = extract_area_from_text(description or "")
+        area_source = "description_regex"
 
         offer_id = _extract_offer_id_from_json_ld(json_ld_entries)
         alnum_id = _extract_alnum_id(args.url) or _extract_alnum_id(page.url)
@@ -735,6 +594,8 @@ async def _run() -> None:
     _print_field("currency", currency)
     _print_field("location", location)
     _print_field("area", area)
+    _print_field("location_source", location_source)
+    _print_field("area_source", area_source)
     _print_field("description_len", description_len)
     _print_field("photos_count", len(photos))
     _print_field("photos", photos_clean)
