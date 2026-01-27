@@ -14,8 +14,6 @@ from bs4 import BeautifulSoup
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-from db.models import ListingData
-from db.sqlite import init_db as init_sqlite_db
 from db.sqlite import upsert_offer
 
 INVALID_LOCATION_MARKERS = {
@@ -391,6 +389,23 @@ def _split_price_and_currency(value: str) -> tuple[Optional[str], Optional[str]]
     return price or None, currency
 
 
+def _parse_price_value(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    cleaned = value.replace("\u00a0", " ").strip()
+    digits = [ch for ch in cleaned if ch.isdigit() or ch in {".", ","}]
+    if not digits:
+        return None
+    number = "".join(digits).replace(" ", "")
+    if number.count(",") > 1 and "." not in number:
+        number = number.replace(",", "")
+    number = number.replace(",", ".")
+    try:
+        return float(number)
+    except ValueError:
+        return None
+
+
 def _extract_dom_location(soup: BeautifulSoup) -> Optional[str]:
     selectors = (
         '[data-testid="location"]',
@@ -737,10 +752,9 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _run() -> None:
-    args = _parse_args()
+async def parse_offer(url: str, headed: bool = False, no_phone: bool = False) -> dict[str, object]:
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=False, slow_mo=200)
+        browser = await playwright.chromium.launch(headless=not headed, slow_mo=200 if headed else 0)
         context = await browser.new_context()
         page = await context.new_page()
         network_json: list[dict[str, object]] = []
@@ -766,7 +780,7 @@ async def _run() -> None:
 
         page.on("request", _handle_request)
         page.on("response", _handle_response)
-        await page.goto(args.url, wait_until="domcontentloaded")
+        await page.goto(url, wait_until="domcontentloaded")
         phone_text_selectors = [
             "button:has-text(\"Показати телефон\")",
             "button:has-text(\"Показать телефон\")",
@@ -920,7 +934,7 @@ async def _run() -> None:
                 area_error = "area not found"
 
         offer_id = _extract_offer_id_from_json_ld(json_ld_entries)
-        alnum_id = _extract_alnum_id(args.url) or _extract_alnum_id(page.url)
+        alnum_id = _extract_alnum_id(url) or _extract_alnum_id(page.url)
         print("alnum_id:", alnum_id)
         if offer_id is None:
             offer_id = offer_id_from_request or _extract_offer_id_from_html(html)
@@ -929,7 +943,7 @@ async def _run() -> None:
         phone = None
         phone_error = None
         phone_debug = None
-        if not args.no_phone and offer_id is not None:
+        if not no_phone and offer_id is not None:
             phone, phone_error, phone_debug = await get_phone(page, offer_id)
         if phone:
             phone_source = "api"
@@ -942,42 +956,56 @@ async def _run() -> None:
     description_len = len(description) if description else None
     photos_clean = [photo for photo in photos if photo][:10]
 
-    db_path = os.getenv("DB_PATH", "data.db")
-    if title and price:
-        listing = ListingData(
-            source="olx",
-            external_id=alnum_id or (str(offer_id) if offer_id else args.url),
-            url=final_url,
-            title=title,
-            price=str(price),
-            description=description or "",
-            phone=phone,
-            photos=photos_clean,
-            location=location,
-            area=area,
-            is_owner=False,
-            created_at=datetime.utcnow(),
-            scraped_at=datetime.utcnow(),
-        )
-        init_sqlite_db(db_path)
-        upsert_offer(listing, db_path)
+    price_value = _parse_price_value(price)
+    return {
+        "offer_id": offer_id,
+        "alnum_id": alnum_id,
+        "url": final_url,
+        "title": title,
+        "price": price_value,
+        "currency": currency,
+        "location": location,
+        "area_m2": area,
+        "description": description,
+        "phone": phone,
+        "photos": photos_clean,
+        "scraped_at": datetime.utcnow().isoformat(),
+        "error": None,
+        "description_len": description_len,
+        "photos_count": len(photos),
+        "location_debug": location_debug,
+        "location_error": location_error,
+        "area_debug": area_debug,
+        "area_error": area_error,
+        "phone_error": phone_error,
+        "phone_debug": phone_debug,
+        "sources": sources,
+    }
 
-    _print_field("title", title)
-    _print_field("price", price)
-    _print_field("currency", currency)
-    _print_field("location", location)
-    _print_field("location_debug", location_debug)
-    _print_field("location_error", location_error)
-    _print_field("area", area)
-    _print_field("area_debug", area_debug)
-    _print_field("area_error", area_error)
-    _print_field("description_len", description_len)
-    _print_field("photos_count", len(photos))
-    _print_field("photos", photos_clean)
-    _print_field("phone", phone)
-    _print_field("phone_error", phone_error)
-    _print_field("phone_debug", phone_debug)
-    _print_field("sources", sources)
+
+async def _run() -> None:
+    args = _parse_args()
+    offer = await parse_offer(args.url, headed=args.headed, no_phone=args.no_phone)
+    db_path = os.getenv("DB_PATH", "data.db")
+    if offer.get("title") and offer.get("price") is not None:
+        upsert_offer(offer, db_path)
+
+    _print_field("title", offer.get("title"))
+    _print_field("price", offer.get("price"))
+    _print_field("currency", offer.get("currency"))
+    _print_field("location", offer.get("location"))
+    _print_field("location_debug", offer.get("location_debug"))
+    _print_field("location_error", offer.get("location_error"))
+    _print_field("area", offer.get("area_m2"))
+    _print_field("area_debug", offer.get("area_debug"))
+    _print_field("area_error", offer.get("area_error"))
+    _print_field("description_len", offer.get("description_len"))
+    _print_field("photos_count", offer.get("photos_count"))
+    _print_field("photos", offer.get("photos"))
+    _print_field("phone", offer.get("phone"))
+    _print_field("phone_error", offer.get("phone_error"))
+    _print_field("phone_debug", offer.get("phone_debug"))
+    _print_field("sources", offer.get("sources"))
 
 
 def main() -> None:
