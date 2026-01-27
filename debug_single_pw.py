@@ -57,6 +57,14 @@ def _normalize_location(text: str) -> Optional[str]:
     return cleaned
 
 
+def _normalize_city(text: str) -> Optional[str]:
+    normalized = _normalize_location(text)
+    if not normalized:
+        return None
+    city = normalized.split(",", 1)[0].strip()
+    return city or None
+
+
 def _extract_offer_id_from_json_ld(entries: Iterable[dict]) -> Optional[int]:
     id_keys = {"offerid", "offer_id", "sku"}
     for key, value in _iter_json_items(list(entries)):
@@ -123,18 +131,15 @@ def _extract_text(soup: BeautifulSoup, selectors: Iterable[str]) -> Optional[str
 
 def _extract_location_from_address(address: object) -> Optional[str]:
     if isinstance(address, dict):
-        parts: list[str] = []
-        for key in ("streetAddress", "addressLocality", "addressRegion"):
+        for key in ("addressLocality", "city"):
             value = address.get(key)
             if isinstance(value, str):
-                cleaned = value.strip()
-                if cleaned:
-                    parts.append(cleaned)
-        if parts:
-            return _normalize_location(", ".join(parts))
+                normalized = _normalize_city(value)
+                if normalized:
+                    return normalized
         name = address.get("name")
         if isinstance(name, str):
-            return _normalize_location(name)
+            return _normalize_city(name)
         return None
     if isinstance(address, list):
         for item in address:
@@ -142,24 +147,21 @@ def _extract_location_from_address(address: object) -> Optional[str]:
             if nested:
                 return nested
     if isinstance(address, str):
-        return _normalize_location(address)
+        return _normalize_city(address)
     return None
 
 
 def _extract_location_from_address_fields(address: object) -> Optional[str]:
     if isinstance(address, dict):
-        parts: list[str] = []
-        for key in ("addressLocality", "addressRegion"):
+        for key in ("addressLocality", "city"):
             value = address.get(key)
             if isinstance(value, str):
-                cleaned = value.strip()
-                if cleaned:
-                    parts.append(cleaned)
-        if parts:
-            return _normalize_location(", ".join(parts))
+                normalized = _normalize_city(value)
+                if normalized:
+                    return normalized
         name = address.get("name")
         if isinstance(name, str):
-            return _normalize_location(name)
+            return _normalize_city(name)
         nested = address.get("address")
         if nested:
             return _extract_location_from_address_fields(nested)
@@ -170,7 +172,7 @@ def _extract_location_from_address_fields(address: object) -> Optional[str]:
             if nested:
                 return nested
     if isinstance(address, str):
-        return _normalize_location(address)
+        return _normalize_city(address)
     return None
 
 
@@ -180,7 +182,7 @@ def _extract_location_from_json_ld(entries: Iterable[dict]) -> Optional[str]:
         if isinstance(location_field, dict):
             name = location_field.get("name")
             if isinstance(name, str):
-                normalized = _normalize_location(name)
+                normalized = _normalize_city(name)
                 if normalized:
                     return normalized
             address = location_field.get("address")
@@ -214,7 +216,7 @@ def extract_location_from_jsonld(jsonld: object) -> Optional[str]:
     if isinstance(location_field, dict):
         name = location_field.get("name")
         if isinstance(name, str):
-            normalized = _normalize_location(name)
+            normalized = _normalize_city(name)
             if normalized:
                 return normalized
         address = location_field.get("address")
@@ -227,7 +229,7 @@ def extract_location_from_jsonld(jsonld: object) -> Optional[str]:
             if isinstance(item, dict):
                 name = item.get("name")
                 if isinstance(name, str):
-                    normalized = _normalize_location(name)
+                    normalized = _normalize_city(name)
                     if normalized:
                         return normalized
                 address = item.get("address")
@@ -236,11 +238,11 @@ def extract_location_from_jsonld(jsonld: object) -> Optional[str]:
                     if nested:
                         return nested
             elif isinstance(item, str):
-                normalized = _normalize_location(item)
+                normalized = _normalize_city(item)
                 if normalized:
                     return normalized
     elif isinstance(location_field, str):
-        normalized = _normalize_location(location_field)
+        normalized = _normalize_city(location_field)
         if normalized:
             return normalized
 
@@ -254,7 +256,7 @@ def extract_location_from_jsonld(jsonld: object) -> Optional[str]:
     if isinstance(area_served, dict):
         name = area_served.get("name")
         if isinstance(name, str):
-            normalized = _normalize_location(name)
+            normalized = _normalize_city(name)
             if normalized:
                 return normalized
     elif isinstance(area_served, list):
@@ -262,15 +264,15 @@ def extract_location_from_jsonld(jsonld: object) -> Optional[str]:
             if isinstance(item, dict):
                 name = item.get("name")
                 if isinstance(name, str):
-                    normalized = _normalize_location(name)
+                    normalized = _normalize_city(name)
                     if normalized:
                         return normalized
             elif isinstance(item, str):
-                normalized = _normalize_location(item)
+                normalized = _normalize_city(item)
                 if normalized:
                     return normalized
     elif isinstance(area_served, str):
-        normalized = _normalize_location(area_served)
+        normalized = _normalize_city(area_served)
         if normalized:
             return normalized
 
@@ -855,10 +857,7 @@ async def _run() -> None:
                     city_raw, region_raw = await _extract_from_container(container.first)
                     if not city_raw or _is_invalid_city(city_raw):
                         continue
-                    location_parts = [city_raw]
-                    if region_raw and region_raw != city_raw:
-                        location_parts.append(region_raw)
-                    built_location = ", ".join(location_parts)
+                    built_location = city_raw
                     debug = (
                         "city_raw: "
                         f"{city_raw}; region_raw: {region_raw}; "
