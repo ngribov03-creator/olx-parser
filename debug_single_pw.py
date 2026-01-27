@@ -569,52 +569,28 @@ async def _extract_phone(page) -> tuple[Optional[str], str]:
     return None, "none"
 
 
-async def _find_phone_button(page):
-    selectors = [
-        "button[data-testid*='phone']",
-        "a[data-testid*='phone']",
-        "[data-testid*='phone']",
-    ]
-    for selector in selectors:
-        locator = page.locator(selector)
-        if await locator.count() == 0:
-            continue
-        return locator.first
-    return None
+async def get_phone(page, offer_id):
+    phone_button = page.locator('[data-testid*="phone"]').first
 
+    async with page.expect_response(
+        lambda r: f"/api/v1/offers/{offer_id}/limited-phones" in r.url and r.status == 200,
+        timeout=15000,
+    ) as resp_info:
+        await phone_button.click()
 
-async def get_phone(page, offer_id: int) -> Optional[str]:
-    button_locator = await _find_phone_button(page)
-    if button_locator is None:
-        print("phone button not found")
-        return None
-
-    response_task = asyncio.create_task(
-        page.wait_for_response(
-            lambda r: f"/api/v1/offers/{offer_id}/limited-phones" in r.url
-            and r.status == 200,
-            timeout=15000,
-        )
-    )
-    try:
-        print("clicking phone button...")
-        await button_locator.click(timeout=2000)
-        print("clicked")
-        resp = await response_task
-    except PlaywrightTimeoutError:
-        response_task.cancel()
-        return None
-    except Exception:
-        response_task.cancel()
-        return None
-
+    resp = await resp_info.value
     data = await resp.json()
+
     phones = data.get("data", {}).get("phones", [])
     phone = phones[0] if phones else None
-    phone = phone.replace(" ", "") if phone else None
+
+    if phone:
+        phone = phone.replace(" ", "")
+
     print("PHONE RESPONSE URL:", resp.url)
     print("PHONE JSON:", data)
     print("PHONE:", phone)
+
     return phone
 
 
