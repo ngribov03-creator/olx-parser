@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 import os
 import re
+import sqlite3
 from typing import Iterable, Optional
 
 from bs4 import BeautifulSoup
@@ -988,7 +989,11 @@ async def _run() -> None:
     offer = await parse_offer(args.url, headed=args.headed, no_phone=args.no_phone)
     db_path = os.getenv("DB_PATH", "data.db")
     if offer.get("title") and offer.get("price") is not None:
-        upsert_offer(offer, db_path)
+        offer_id = offer.get("offer_id")
+        try:
+            upsert_offer(offer, db_path)
+        except sqlite3.OperationalError as exc:
+            print(f"{offer_id} {exc!r}")
 
     _print_field("title", offer.get("title"))
     _print_field("price", offer.get("price"))

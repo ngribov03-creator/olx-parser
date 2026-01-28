@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import logging
 import os
 import re
+import sqlite3
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -169,7 +170,12 @@ def main() -> None:
                 continue
             if not listing_data:
                 continue
-            upsert_offer(listing_data, config.db_path)
+            offer_id = listing_data.external_id
+            try:
+                upsert_offer(listing_data, config.db_path)
+            except sqlite3.OperationalError as exc:
+                print(f"{offer_id} {exc!r}")
+                continue
             match = None
             if config.agent_keywords_filter:
                 match = find_agent_keyword_match(
