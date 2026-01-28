@@ -67,6 +67,10 @@ def process_url(url: str, headed: bool = False, no_phone: bool = False) -> bool:
         _log_publish_error(exc, offer_id, record.get("url"))
         mark_post_error(int(offer_id), f"HTTPError: {exc}")
         return False
+    except requests.exceptions.RequestException as exc:
+        _log_publish_error(exc, offer_id, record.get("url"))
+        mark_post_error(int(offer_id), f"RequestException: {exc}")
+        return False
     except Exception as exc:
         _log_publish_error(exc, offer_id, record.get("url"))
         mark_post_error(int(offer_id), f"Exception: {exc}")
@@ -102,6 +106,11 @@ def main() -> None:
         _log_publish_error(exc, offer_id, target.get("url"))
         if offer_id is not None:
             mark_post_error(int(offer_id), f"HTTPError: {exc}")
+        return
+    except requests.exceptions.RequestException as exc:
+        _log_publish_error(exc, offer_id, target.get("url"))
+        if offer_id is not None:
+            mark_post_error(int(offer_id), f"RequestException: {exc}")
         return
     except Exception as exc:
         _log_publish_error(exc, offer_id, target.get("url"))
