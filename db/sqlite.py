@@ -13,8 +13,12 @@ DB_PATH = "db/data.db"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    connection = sqlite3.connect(db_path)
+    connection = sqlite3.connect(db_path, timeout=30)
     connection.row_factory = sqlite3.Row
+    cursor = connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA busy_timeout=5000;")
+    cursor.close()
     return connection
 
 
@@ -144,8 +148,10 @@ def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) ->
     if not photos_json:
         photos_json = _serialize_photos(payload.get("photos"))
     scraped_at = payload.get("scraped_at") or datetime.utcnow().isoformat()
-    with _connect(db_path) as connection:
-        connection.execute(
+    connection = _connect(db_path)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
             """
             INSERT INTO offers (
                 offer_id,
@@ -205,6 +211,44 @@ def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) ->
                 payload.get("post_error"),
             ),
         )
+        connection.commit()
+    except sqlite3.OperationalError as exc:
+        connection.rollback()
+        _record_post_error(offer_id, exc, db_path)
+        raise
+    finally:
+        connection.close()
+
+
+def _record_post_error(
+    offer_id: Optional[int],
+    error: Exception,
+    db_path: str,
+) -> None:
+    if offer_id is None:
+        return
+    try:
+        init_db(db_path)
+    except sqlite3.OperationalError:
+        return
+    error_text = repr(error)
+    connection = _connect(db_path)
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO offers (offer_id, post_error)
+            VALUES (?, ?)
+            ON CONFLICT(offer_id) DO UPDATE SET
+                post_error = excluded.post_error
+            """,
+            (offer_id, error_text),
+        )
+        connection.commit()
+    except sqlite3.OperationalError:
+        connection.rollback()
+    finally:
+        connection.close()
 
 
 def _row_to_offer(row: sqlite3.Row) -> dict[str, Any]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sqlite3
 
 from db.sqlite import (
     get_offer_by_id,
@@ -46,10 +47,14 @@ def _parse_args() -> argparse.Namespace:
 def process_url(url: str, headed: bool = False, no_phone: bool = False) -> bool:
     offer = asyncio.run(parse_offer(url, headed=headed, no_phone=no_phone))
     init_db()
-    upsert_offer(offer)
+    offer_id = offer.get("offer_id")
+    try:
+        upsert_offer(offer)
+    except sqlite3.OperationalError as exc:
+        print(f"{offer_id} {exc!r}")
+        return False
     print("Saved to DB")
 
-    offer_id = offer.get("offer_id")
     if offer_id is None:
         print("Missing offer_id; skip posting")
         return False
@@ -84,10 +89,14 @@ def main() -> None:
     args = _parse_args()
     offer = asyncio.run(parse_offer(args.url, headed=args.headed, no_phone=args.no_phone))
     init_db()
-    upsert_offer(offer)
+    offer_id = offer.get("offer_id")
+    try:
+        upsert_offer(offer)
+    except sqlite3.OperationalError as exc:
+        print(f"{offer_id} {exc!r}")
+        return
     print("Saved to DB")
 
-    offer_id = offer.get("offer_id")
     unposted = get_unposted_offers(limit=5)
     target = None
     if offer_id is not None:
