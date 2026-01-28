@@ -172,7 +172,7 @@ def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) ->
                 error,
                 post_error
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(offer_id) DO UPDATE SET
                 alnum_id = excluded.alnum_id,
                 url = excluded.url,
