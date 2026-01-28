@@ -243,6 +243,22 @@ def get_unposted_offers(limit: int = 5, db_path: str = DB_PATH) -> list[dict[str
     return [_row_to_offer(row) for row in rows]
 
 
+def get_offer_by_id(offer_id: int, db_path: str = DB_PATH) -> Optional[dict[str, Any]]:
+    init_db(db_path)
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM offers
+            WHERE offer_id = ?
+            """,
+            (offer_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return _row_to_offer(row)
+
+
 def mark_posted(offer_id: int, tg_message_id: str, db_path: str = DB_PATH) -> None:
     init_db(db_path)
     posted_at = datetime.utcnow().isoformat()
