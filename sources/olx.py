@@ -8,7 +8,7 @@ import json
 import logging
 import re
 from typing import Iterable, List, Optional
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
@@ -34,10 +34,23 @@ def build_page_url(search_url: str, page: int) -> str:
 
 
 def parse_external_id(url: str, fallback: Optional[str] = None) -> str:
-    match = re.search(r"ID([A-Za-z0-9]+)", url)
+    normalized_url = normalize_listing_url(url)
+    match = re.search(r"ID([A-Za-z0-9]+)", normalized_url)
     if match:
         return match.group(1)
-    return fallback or url
+    return fallback or normalized_url
+
+
+def normalize_listing_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.netloc.lower().startswith("login.olx.ua"):
+        query = parse_qs(parsed.query)
+        redirect_values = query.get("redirect_uri")
+        if redirect_values:
+            redirect_url = unquote(redirect_values[0]).strip()
+            if redirect_url:
+                return redirect_url
+    return url
 
 
 def _iter_json_ld_objects(data: object) -> List[dict]:
@@ -412,7 +425,7 @@ def parse_listing_previews(html: str, base_url: str) -> List[ListingPreview]:
         href = link.get("href")
         if not href:
             continue
-        url = urljoin(base_url, href)
+        url = normalize_listing_url(urljoin(base_url, href))
         if url in seen:
             continue
         data_id = None
@@ -427,7 +440,7 @@ def parse_listing_previews(html: str, base_url: str) -> List[ListingPreview]:
         href = link.get("href")
         if not href:
             continue
-        url = urljoin(base_url, href)
+        url = normalize_listing_url(urljoin(base_url, href))
         if url in seen:
             continue
         previews.append(ListingPreview(url=url, external_id=parse_external_id(url)))
@@ -505,6 +518,7 @@ def extract_title(soup: BeautifulSoup) -> Optional[str]:
 
 
 def parse_listing_details(html: str, url: str, external_id: str) -> Optional[ListingData]:
+    normalized_url = normalize_listing_url(url)
     soup = BeautifulSoup(html, "html.parser")
     json_ld_entries = _extract_json_ld_objects(soup)
     json_ld = json_ld_entries[0] if json_ld_entries else None
@@ -536,14 +550,22 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
     if not price:
         price = _extract_price_from_json_ld(json_ld_entries)
         if not price:
-            LOGGER.debug("Price missing for %s (json_ld_objects=%s)", url, len(json_ld_entries))
+            LOGGER.debug(
+                "Price missing for %s (json_ld_objects=%s)",
+                normalized_url,
+                len(json_ld_entries),
+            )
 
     description = extract_description(soup, json_ld)
     location, location_source = extract_location(soup, json_ld_entries)
     if location:
-        LOGGER.debug("Location extracted for %s from %s", url, location_source)
+        LOGGER.debug("Location extracted for %s from %s", normalized_url, location_source)
     else:
-        LOGGER.debug("Location missing for %s (json_ld_objects=%s)", url, len(json_ld_entries))
+        LOGGER.debug(
+            "Location missing for %s (json_ld_objects=%s)",
+            normalized_url,
+            len(json_ld_entries),
+        )
     area = extract_area(soup)
 
     photo_candidates: List[str] = []
@@ -574,13 +596,13 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
         missing_fields.append("photos")
 
     if set(missing_fields) == {"title", "price", "location", "description", "photos"}:
-        LOGGER.info("Temporary fetch issue (empty HTML), skipping: %s", url)
+        LOGGER.info("Temporary fetch issue (empty HTML), skipping: %s", normalized_url)
         return None
 
     if not title or not price:
         LOGGER.warning(
             "Skip (invalid listing): %s missing=%s",
-            url,
+            normalized_url,
             ",".join(missing_fields),
         )
         return None
@@ -593,7 +615,7 @@ def parse_listing_details(html: str, url: str, external_id: str) -> Optional[Lis
     listing = ListingData(
         source="olx",
         external_id=external_id,
-        url=url,
+        url=normalized_url,
         title=title,
         price=str(price),
         description=description,
@@ -619,5 +641,6 @@ def fetch_listings(search_url: str, pages: int, client: HttpClient) -> List[List
 
 
 def fetch_listing_data(preview: ListingPreview, client: HttpClient) -> Optional[ListingData]:
-    response = client.get(preview.url)
-    return parse_listing_details(response.text, preview.url, preview.external_id)
+    normalized_url = normalize_listing_url(preview.url)
+    response = client.get(normalized_url)
+    return parse_listing_details(response.text, normalized_url, preview.external_id)
