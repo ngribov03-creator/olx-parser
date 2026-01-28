@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import os
-import random
 import time
 from typing import Any, Optional
 
@@ -85,25 +84,28 @@ def _post_with_retry(
     url: str,
     payload: dict[str, Any],
     timeout: int = 30,
-    max_retries: int = 2,
+    delays: tuple[int, ...] = (2, 5, 10),
 ) -> requests.Response:
-    attempts = 0
-    while True:
-        response = session.post(url, json=payload, timeout=timeout)
-        status = response.status_code
-        if status == 429 and attempts < max_retries:
-            attempts += 1
-            time.sleep(random.uniform(3, 5))
-            continue
-        if 500 <= status < 600 and attempts < max_retries:
-            attempts += 1
-            time.sleep(2)
-            continue
-        return response
+    last_exc: Exception | None = None
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            response = session.post(url, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.HTTPError as exc:
+            last_exc = exc
+        except requests.exceptions.RequestException as exc:
+            last_exc = exc
+        except Exception as exc:
+            last_exc = exc
+        if attempt < len(delays):
+            time.sleep(delay)
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Telegram request failed without exception")
 
 
 def _parse_response(response: requests.Response) -> str:
-    response.raise_for_status()
     payload = response.json()
     if not payload.get("ok"):
         raise RuntimeError(f"Telegram API error: {payload}")
@@ -120,12 +122,13 @@ def _send_message(
     token: str,
     channel_id: str,
     text: str,
-) -> requests.Response:
-    return _post_with_retry(
+) -> str:
+    response = _post_with_retry(
         session,
         _api_url(token, "sendMessage"),
         {"chat_id": channel_id, "text": text},
     )
+    return _parse_response(response)
 
 
 def _send_photo(
@@ -134,12 +137,27 @@ def _send_photo(
     channel_id: str,
     photo: str,
     caption: str,
-) -> requests.Response:
-    return _post_with_retry(
+) -> str:
+    response = _post_with_retry(
         session,
         _api_url(token, "sendPhoto"),
         {"chat_id": channel_id, "photo": photo, "caption": caption},
     )
+    return _parse_response(response)
+
+
+def _send_media_group(
+    session: requests.Session,
+    token: str,
+    channel_id: str,
+    media: list[dict[str, Any]],
+) -> str:
+    response = _post_with_retry(
+        session,
+        _api_url(token, "sendMediaGroup"),
+        {"chat_id": channel_id, "media": media},
+    )
+    return _parse_response(response)
 
 
 def publish_offer(offer: dict[str, Any]) -> str:
@@ -148,8 +166,7 @@ def publish_offer(offer: dict[str, Any]) -> str:
     photos = _normalize_photos(offer.get("photos"))
     session = requests.Session()
     if not photos:
-        response = _send_message(session, token, channel_id, message)
-        return _parse_response(response)
+        return _send_message(session, token, channel_id, message)
 
     media = []
     for index, photo in enumerate(photos):
@@ -158,16 +175,18 @@ def publish_offer(offer: dict[str, Any]) -> str:
             item["caption"] = message
         media.append(item)
     try:
-        response = _post_with_retry(
-            session,
-            _api_url(token, "sendMediaGroup"),
-            {"chat_id": channel_id, "media": media},
-        )
-        return _parse_response(response)
+        return _send_media_group(session, token, channel_id, media)
     except requests.exceptions.HTTPError:
-        try:
-            response = _send_photo(session, token, channel_id, photos[0], message)
-            return _parse_response(response)
-        except requests.exceptions.HTTPError:
-            response = _send_message(session, token, channel_id, message)
-            return _parse_response(response)
+        pass
+    except requests.exceptions.RequestException:
+        pass
+    except Exception:
+        pass
+    try:
+        return _send_photo(session, token, channel_id, photos[0], message)
+    except requests.exceptions.HTTPError:
+        return _send_message(session, token, channel_id, message)
+    except requests.exceptions.RequestException:
+        return _send_message(session, token, channel_id, message)
+    except Exception:
+        return _send_message(session, token, channel_id, message)
