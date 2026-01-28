@@ -5,9 +5,34 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from db.sqlite import get_offer_by_id, get_unposted_offers, init_db, mark_posted, upsert_offer
+from db.sqlite import (
+    get_offer_by_id,
+    get_unposted_offers,
+    init_db,
+    mark_post_error,
+    mark_posted,
+    upsert_offer,
+)
 from debug_single_pw import parse_offer
 from telegram.publisher import publish_offer
+import requests
+
+
+def _log_publish_error(
+    error: Exception,
+    offer_id: int | None,
+    url: str | None,
+) -> None:
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    response_text = getattr(response, "text", None)
+    print(
+        "Telegram publish error:",
+        f"offer_id={offer_id}",
+        f"url={url}",
+        f"status_code={status_code}",
+        f"response_text={response_text}",
+    )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -36,7 +61,16 @@ def process_url(url: str, headed: bool = False, no_phone: bool = False) -> bool:
         print("Already posted")
         return False
 
-    tg_message_id = publish_offer(record)
+    try:
+        tg_message_id = publish_offer(record)
+    except requests.exceptions.HTTPError as exc:
+        _log_publish_error(exc, offer_id, record.get("url"))
+        mark_post_error(int(offer_id), f"HTTPError: {exc}")
+        return False
+    except Exception as exc:
+        _log_publish_error(exc, offer_id, record.get("url"))
+        mark_post_error(int(offer_id), f"Exception: {exc}")
+        return False
     mark_posted(int(offer_id), tg_message_id)
     print("Posted to TG")
     return True
@@ -61,9 +95,21 @@ def main() -> None:
         print("Already posted")
         return
 
-    tg_message_id = publish_offer(target)
-    if target.get("offer_id") is not None:
-        mark_posted(int(target["offer_id"]), tg_message_id)
+    offer_id = target.get("offer_id")
+    try:
+        tg_message_id = publish_offer(target)
+    except requests.exceptions.HTTPError as exc:
+        _log_publish_error(exc, offer_id, target.get("url"))
+        if offer_id is not None:
+            mark_post_error(int(offer_id), f"HTTPError: {exc}")
+        return
+    except Exception as exc:
+        _log_publish_error(exc, offer_id, target.get("url"))
+        if offer_id is not None:
+            mark_post_error(int(offer_id), f"Exception: {exc}")
+        return
+    if offer_id is not None:
+        mark_posted(int(offer_id), tg_message_id)
     print("Posted to TG")
 
 

@@ -117,13 +117,20 @@ def init_db(db_path: str = DB_PATH) -> None:
                 posted_to_tg INTEGER DEFAULT 0,
                 posted_at TEXT,
                 tg_message_id TEXT,
-                error TEXT
+                error TEXT,
+                post_error TEXT
             )
             """
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_offers_posted ON offers(posted_to_tg, id)"
         )
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(offers)").fetchall()
+        }
+        if "post_error" not in columns:
+            connection.execute("ALTER TABLE offers ADD COLUMN post_error TEXT")
 
 
 def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) -> None:
@@ -156,7 +163,8 @@ def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) ->
                 posted_to_tg,
                 posted_at,
                 tg_message_id,
-                error
+                error,
+                post_error
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(offer_id) DO UPDATE SET
@@ -174,7 +182,8 @@ def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) ->
                 posted_to_tg = COALESCE(offers.posted_to_tg, excluded.posted_to_tg),
                 posted_at = COALESCE(offers.posted_at, excluded.posted_at),
                 tg_message_id = COALESCE(offers.tg_message_id, excluded.tg_message_id),
-                error = excluded.error
+                error = excluded.error,
+                post_error = COALESCE(excluded.post_error, offers.post_error)
             """,
             (
                 offer_id,
@@ -193,6 +202,7 @@ def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) ->
                 payload.get("posted_at"),
                 payload.get("tg_message_id"),
                 payload.get("error"),
+                payload.get("post_error"),
             ),
         )
 
@@ -224,6 +234,7 @@ def _row_to_offer(row: sqlite3.Row) -> dict[str, Any]:
         "posted_at": row["posted_at"],
         "tg_message_id": row["tg_message_id"],
         "error": row["error"],
+        "post_error": row["post_error"],
     }
 
 
@@ -268,8 +279,22 @@ def mark_posted(offer_id: int, tg_message_id: str, db_path: str = DB_PATH) -> No
             UPDATE offers
             SET posted_to_tg = 1,
                 posted_at = ?,
-                tg_message_id = ?
+                tg_message_id = ?,
+                post_error = NULL
             WHERE offer_id = ?
             """,
             (posted_at, tg_message_id, offer_id),
+        )
+
+
+def mark_post_error(offer_id: int, error: str, db_path: str = DB_PATH) -> None:
+    init_db(db_path)
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE offers
+            SET post_error = ?
+            WHERE offer_id = ?
+            """,
+            (error, offer_id),
         )
