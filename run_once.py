@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 
-from db.sqlite import get_unposted_offers, init_db, mark_posted, upsert_offer
+from db.sqlite import get_offer_by_id, get_unposted_offers, init_db, mark_posted, upsert_offer
 from debug_single_pw import parse_offer
 from telegram.publisher import publish_offer
 
@@ -16,6 +16,30 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--headed", action="store_true", help="Run browser in headed mode")
     parser.add_argument("--no-phone", action="store_true", help="Skip phone extraction")
     return parser.parse_args()
+
+
+def process_url(url: str, headed: bool = False, no_phone: bool = False) -> bool:
+    offer = asyncio.run(parse_offer(url, headed=headed, no_phone=no_phone))
+    init_db()
+    upsert_offer(offer)
+    print("Saved to DB")
+
+    offer_id = offer.get("offer_id")
+    if offer_id is None:
+        print("Missing offer_id; skip posting")
+        return False
+    record = get_offer_by_id(int(offer_id))
+    if not record:
+        print("Offer not found in DB; skip posting")
+        return False
+    if record.get("posted_to_tg"):
+        print("Already posted")
+        return False
+
+    tg_message_id = publish_offer(record)
+    mark_posted(int(offer_id), tg_message_id)
+    print("Posted to TG")
+    return True
 
 
 def main() -> None:
