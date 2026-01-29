@@ -8,13 +8,14 @@ import json
 import logging
 import re
 from typing import Iterable, List, Optional
-from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
 from db.models import ListingData
 from owner_filter import is_owner
 from utils.http import HttpClient
+from utils.olx import normalize_olx_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,23 +35,11 @@ def build_page_url(search_url: str, page: int) -> str:
 
 
 def parse_external_id(url: str, fallback: Optional[str] = None) -> str:
-    normalized_url = normalize_listing_url(url)
+    normalized_url = normalize_olx_url(url) or url
     match = re.search(r"ID([A-Za-z0-9]+)", normalized_url)
     if match:
         return match.group(1)
     return fallback or normalized_url
-
-
-def normalize_listing_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.netloc.lower().startswith("login.olx.ua"):
-        query = parse_qs(parsed.query)
-        redirect_values = query.get("redirect_uri")
-        if redirect_values:
-            redirect_url = unquote(redirect_values[0]).strip()
-            if redirect_url:
-                return redirect_url
-    return url
 
 
 def _iter_json_ld_objects(data: object) -> List[dict]:
@@ -425,7 +414,9 @@ def parse_listing_previews(html: str, base_url: str) -> List[ListingPreview]:
         href = link.get("href")
         if not href:
             continue
-        url = normalize_listing_url(urljoin(base_url, href))
+        url = normalize_olx_url(urljoin(base_url, href))
+        if not url:
+            continue
         if url in seen:
             continue
         data_id = None
@@ -440,7 +431,9 @@ def parse_listing_previews(html: str, base_url: str) -> List[ListingPreview]:
         href = link.get("href")
         if not href:
             continue
-        url = normalize_listing_url(urljoin(base_url, href))
+        url = normalize_olx_url(urljoin(base_url, href))
+        if not url:
+            continue
         if url in seen:
             continue
         previews.append(ListingPreview(url=url, external_id=parse_external_id(url)))
@@ -518,7 +511,9 @@ def extract_title(soup: BeautifulSoup) -> Optional[str]:
 
 
 def parse_listing_details(html: str, url: str, external_id: str) -> Optional[ListingData]:
-    normalized_url = normalize_listing_url(url)
+    normalized_url = normalize_olx_url(url)
+    if not normalized_url:
+        return None
     soup = BeautifulSoup(html, "html.parser")
     json_ld_entries = _extract_json_ld_objects(soup)
     json_ld = json_ld_entries[0] if json_ld_entries else None
@@ -641,6 +636,8 @@ def fetch_listings(search_url: str, pages: int, client: HttpClient) -> List[List
 
 
 def fetch_listing_data(preview: ListingPreview, client: HttpClient) -> Optional[ListingData]:
-    normalized_url = normalize_listing_url(preview.url)
+    normalized_url = normalize_olx_url(preview.url)
+    if not normalized_url:
+        return None
     response = client.get(normalized_url)
     return parse_listing_details(response.text, normalized_url, preview.external_id)
