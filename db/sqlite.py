@@ -8,6 +8,7 @@ import sqlite3
 from typing import Any, Iterable, Optional
 
 from db.models import ListingData
+from utils.olx import normalize_olx_url
 
 DB_PATH = "db/data.db"
 
@@ -143,6 +144,9 @@ def upsert_offer(offer: dict[str, Any] | ListingData, db_path: str = DB_PATH) ->
         payload = _offer_from_listing(offer)
     else:
         payload = dict(offer)
+    normalized_url = normalize_olx_url(str(payload.get("url") or ""))
+    if normalized_url:
+        payload["url"] = normalized_url
     offer_id = _normalize_offer_id(payload.get("offer_id"))
     photos_json = payload.get("photos_json")
     if not photos_json:

@@ -10,6 +10,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 import requests
 
+from utils.olx import normalize_olx_url
 
 def _load_env() -> tuple[str, str]:
     load_dotenv()
@@ -49,7 +50,8 @@ def _build_message(offer: dict[str, Any]) -> str:
     location = _clean_text(offer.get("location")) or ""
     area = offer.get("area_m2")
     phone = _clean_text(offer.get("phone"))
-    url = _clean_text(offer.get("url")) or ""
+    raw_url = _clean_text(offer.get("url")) or ""
+    url = normalize_olx_url(raw_url) or ""
 
     lines = [title]
     if price is not None:
